@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>Access Token Retrieval</title>
+  <style>
+    body { font-family: sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+    label { display: block; margin-top: 12px; font-weight: bold; }
+    input, textarea { width: 100%; padding: 6px; margin-top: 4px; box-sizing: border-box; font-family: monospace; }
+    textarea { height: 80px; resize: vertical; }
+    button { margin-top: 16px; padding: 8px 20px; cursor: pointer; }
+    pre { background: #f4f4f4; padding: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+    .error { color: red; }
+    small { color: #666; font-weight: normal; }
+  </style>
+</head>
+<body>
+  <h1>Access Token 取得 (client_credentials)</h1>
+
+  <label>Auth Endpoint
+    <input id="authEndpoint" type="text" placeholder="https://auth.web.auto" />
+    <small>Token URL: <span id="tokenUrlPreview"></span></small>
+  </label>
+  <label>Client ID (AUTH_CLIENT_ID)
+    <input id="clientId" type="text" placeholder="your-client-id" />
+  </label>
+  <label>Subject ID (AUTH_SUBJECT_ID)
+    <input id="subjectId" type="text" placeholder="your-subject-id" />
+  </label>
+  <label>Base64 エンコード済み秘密鍵 (AUTH_ENCODED_PRIVATE_KEY)
+    <textarea id="privateKey" placeholder="base64エンコードされたRSA秘密鍵を貼り付け"></textarea>
+  </label>
+
+  <button id="fetchBtn">アクセストークン取得</button>
+
+  <h2>レスポンス</h2>
+  <pre id="result">-</pre>
+
+  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+  <script type="module">
+    import { SignJWT, importPKCS8 } from 'https://cdn.jsdelivr.net/npm/jose/+esm';
+
+    // デフォルト値
+    document.getElementById("authEndpoint").value = "https://auth.web.auto";
+
+    // Token URL プレビューを動的更新
+    function updatePreview() {
+      const ep = document.getElementById("authEndpoint").value.trim();
+      document.getElementById("tokenUrlPreview").textContent =
+        ep ? ep.replace(/\/$/, '') + '/v2/token' : '';
+    }
+    document.getElementById("authEndpoint").addEventListener("input", updatePreview);
+    updatePreview();
+
+    // DER 可変長エンコード
+    function derLength(len) {
+      if (len < 128) return new Uint8Array([len]);
+      const bytes = [];
+      for (let n = len; n > 0; n >>= 8) bytes.unshift(n & 0xff);
+      return new Uint8Array([0x80 | bytes.length, ...bytes]);
+    }
+
+    function concat(...arrays) {
+      const out = new Uint8Array(arrays.reduce((s, a) => s + a.length, 0));
+      let pos = 0;
+      for (const a of arrays) { out.set(a, pos); pos += a.length; }
+      return out;
+    }
+
+    // PKCS#1 RSA DER → PKCS#8 DER ラッピング
+    function pkcs1ToPkcs8(pkcs1Der) {
+      const algId = new Uint8Array([
+        0x30, 0x0d,
+        0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01,
+        0x05, 0x00,
+      ]);
+      const version    = new Uint8Array([0x02, 0x01, 0x00]);
+      const octetStr   = concat(new Uint8Array([0x04]), derLength(pkcs1Der.length), pkcs1Der);
+      const inner      = concat(version, algId, octetStr);
+      return concat(new Uint8Array([0x30]), derLength(inner.length), inner);
+    }
+
+    // 秘密鍵インポート: PKCS#8 PEM / PKCS#1 PEM / base64 DER を自動判別
+    async function importPrivateKey(input) {
+      const cleaned = input.replace(/\s/g, '');
+
+      // base64 デコードして PEM かどうか確認
+      let pem = null;
+      try {
+        const decoded = atob(cleaned);
+        if (decoded.trimStart().startsWith('-----BEGIN')) pem = decoded;
+      } catch { /* 生 PEM が渡された場合はここへは来ない */ }
+
+      // 生 PEM がそのまま渡された場合
+      if (!pem && input.trimStart().startsWith('-----BEGIN')) pem = input;
+
+      if (pem) {
+        if (pem.includes('-----BEGIN PRIVATE KEY-----')) {
+          // PKCS#8 PEM → jose で直接インポート
+          return await importPKCS8(pem, 'RS256');
+        }
+        if (pem.includes('-----BEGIN RSA PRIVATE KEY-----')) {
+          // PKCS#1 PEM → PKCS#8 DER に変換して Web Crypto でインポート
+          const b64     = pem.replace(/-----[^-]+-----/g, '').replace(/\s/g, '');
+          const pkcs1   = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+          const pkcs8   = pkcs1ToPkcs8(pkcs1);
+          return await crypto.subtle.importKey(
+            'pkcs8', pkcs8,
+            { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+            false, ['sign'],
+          );
+        }
+        throw new Error('未対応の PEM 形式: ' + pem.split('\n')[0]);
+      }
+
+      // base64 エンコード済み PKCS#8 DER として直接インポート
+      const der = Uint8Array.from(atob(cleaned), c => c.charCodeAt(0));
+      return await crypto.subtle.importKey(
+        'pkcs8', der,
+        { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+        false, ['sign'],
+      );
+    }
+
+    document.getElementById("fetchBtn").addEventListener("click", async () => {
+      const authEndpoint  = document.getElementById("authEndpoint").value.trim();
+      const clientId      = document.getElementById("clientId").value.trim();
+      const subjectId     = document.getElementById("subjectId").value.trim();
+      const privateKeyB64 = document.getElementById("privateKey").value.trim();
+      const resultEl      = document.getElementById("result");
+
+      if (!authEndpoint || !clientId || !subjectId || !privateKeyB64) {
+        resultEl.textContent = "すべてのフィールドは必須です。";
+        resultEl.className = "error";
+        return;
+      }
+
+      const tokenUrl = authEndpoint.replace(/\/$/, '') + '/v2/token';
+      resultEl.className = "";
+      resultEl.textContent = "取得中...";
+
+      try {
+        const privateKey = await importPrivateKey(privateKeyB64);
+        const now = Math.floor(Date.now() / 1000);
+        const clientAssertion = await new SignJWT({})
+          .setProtectedHeader({ alg: 'RS256' })
+          .setIssuer(clientId)
+          .setSubject(subjectId)
+          .setExpirationTime(now + 60)
+          .sign(privateKey);
+
+        const params = new URLSearchParams({
+          grant_type: 'client_credentials',
+          client_id: clientId,
+          client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+          client_assertion: clientAssertion,
+        });
+
+        const response = await axios.post(tokenUrl, params, {
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        });
+
+        resultEl.textContent = JSON.stringify(response.data, null, 2);
+      } catch (err) {
+        resultEl.className = "error";
+        if (err.response) {
+          resultEl.textContent = `Error ${err.response.status}: ${JSON.stringify(err.response.data, null, 2)}`;
+        } else {
+          resultEl.textContent = String(err);
+        }
+      }
+    });
+  </script>
+</body>
+</html>
