@@ -5,7 +5,6 @@
   <title>May Mobility Fleet API</title>
   <style>
     body { font-family: sans-serif; max-width: 700px; margin: 40px auto; padding: 0 16px; }
-    h2 { margin-top: 32px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
     label { display: block; margin-top: 12px; font-weight: bold; }
     input, textarea, select {
       width: 100%; padding: 6px; margin-top: 4px;
@@ -21,124 +20,150 @@
     .error { color: red; }
     .ok    { color: green; }
     .hint  { color: #666; font-size: 0.85em; font-weight: normal; }
-    .section { background: #fafafa; border: 1px solid #e0e0e0; border-radius: 6px; padding: 16px; margin-top: 24px; }
+
+    /* アコーディオン */
+    .accordion { border: 1px solid #e0e0e0; border-radius: 6px; margin-top: 16px; overflow: hidden; }
+    .accordion-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 16px; background: #f0f4f8; cursor: pointer;
+      user-select: none;
+    }
+    .accordion-header:hover { background: #e4eaf0; }
+    .accordion-header h2 { margin: 0; font-size: 1rem; }
+    .accordion-arrow { font-size: 0.85rem; transition: transform 0.2s; color: #555; }
+    .accordion-body { padding: 16px; background: #fafafa; display: none; }
+    .accordion.open .accordion-body { display: block; }
+    .accordion.open .accordion-arrow { transform: rotate(180deg); }
+
     .token-display { font-size: 0.8em; word-break: break-all; color: #333; }
     .video-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 12px; }
     .video-slot { background: #111; position: relative; border-radius: 4px; overflow: hidden; min-height: 80px; }
     .video-slot canvas { width: 100%; display: block; }
     .cam-label { position: absolute; top: 4px; left: 4px; color: #fff; background: rgba(0,0,0,0.6); padding: 2px 6px; font-size: 0.75em; border-radius: 3px; pointer-events: none; }
-    .cam-stats { position: absolute; bottom: 4px; right: 4px; color: #0f0; background: rgba(0,0,0,0.6); padding: 2px 6px; font-size: 0.7em; border-radius: 3px; pointer-events: none; font-family: monospace; }
+    .cam-stats  { position: absolute; bottom: 4px; right: 4px; color: #0f0; background: rgba(0,0,0,0.6); padding: 2px 6px; font-size: 0.7em; border-radius: 3px; pointer-events: none; font-family: monospace; }
   </style>
 </head>
 <body>
   <h1>May Mobility Fleet API クライアント</h1>
 
   <!-- ── 1. 認証設定 ── -->
-  <div class="section">
-    <h2>1. 認証設定 (AWS Cognito)</h2>
-
-    <label>Cognito Token URL
-      <input id="cognitoUrl" type="text" placeholder="https://your-domain.auth.us-east-1.amazoncognito.com/oauth2/token" />
-    </label>
-    <label>Base64 Token <span class="hint">(Fleet API チームから提供)</span>
-      <input id="base64Token" type="password" placeholder="provided-by-fleet-api-team" />
-    </label>
-    <label>Client ID
-      <input id="clientId" type="text" placeholder="provided-by-fleet-api-team" />
-    </label>
-    <label>Client Secret
-      <input id="clientSecret" type="password" placeholder="provided-by-fleet-api-team" />
-    </label>
-    <label>Scope
-      <input id="scope" type="text" placeholder="provided-by-fleet-api-team" />
-    </label>
-
-    <button id="tokenBtn">トークン取得</button>
-
-    <label style="margin-top:16px;">取得したアクセストークン</label>
-    <pre id="tokenResult" class="token-display">-</pre>
-  </div>
-
-  <!-- ── 4. Video Streaming ── -->
-  <div class="section">
-    <h2>4. Video Streaming</h2>
-    <p class="hint">
-      WebSocket でバイナリ受信 → quic_wrapper protobuf デコード → image_t (VP9/JPEG) → Canvas 描画。<br>
-      最大4車両まで同時受信可能。mqtt_topic に "fc" を含む場合はフロントカメラ等として表示。
-    </p>
-
-    <label>Video Stream URL (WebSocket)
-      <input id="videoUrl" type="text" placeholder="wss://realtime.maymobility.com/fleet/video" />
-    </label>
-    <label>追加パラメータ <span class="hint">(key=value 形式、1行1パラメータ)</span>
-      <textarea id="videoParams" placeholder="vehicle_id=xxx&#10;camera=fc"></textarea>
-    </label>
-
-    <button id="videoConnectBtn" disabled>Video 接続</button>
-    <button id="videoDisconnectBtn" disabled>切断</button>
-
-    <label style="margin-top:12px;">接続 URL</label>
-    <pre id="videoUrlDisplay">-</pre>
-
-    <label style="margin-top:12px;">受信フレーム表示</label>
-    <div class="video-grid" id="videoGrid"></div>
-
-    <label style="margin-top:12px;">ログ</label>
-    <pre id="videoLog" style="max-height:180px;overflow-y:auto;">-</pre>
+  <div class="accordion open" id="section1">
+    <div class="accordion-header" onclick="toggleSection('section1')">
+      <h2>1. 認証設定 (AWS Cognito)</h2>
+      <span class="accordion-arrow">▼</span>
+    </div>
+    <div class="accordion-body">
+      <label>Cognito Token URL
+        <input id="cognitoUrl" type="text" placeholder="https://your-domain.auth.us-east-1.amazoncognito.com/oauth2/token" />
+      </label>
+      <label>Base64 Token <span class="hint">(Fleet API チームから提供)</span>
+        <input id="base64Token" type="password" placeholder="provided-by-fleet-api-team" />
+      </label>
+      <label>Client ID
+        <input id="clientId" type="text" placeholder="provided-by-fleet-api-team" />
+      </label>
+      <label>Client Secret
+        <input id="clientSecret" type="password" placeholder="provided-by-fleet-api-team" />
+      </label>
+      <label>Scope
+        <input id="scope" type="text" placeholder="provided-by-fleet-api-team" />
+      </label>
+      <button id="tokenBtn">トークン取得</button>
+      <label style="margin-top:16px;">取得したアクセストークン</label>
+      <pre id="tokenResult" class="token-display">-</pre>
+    </div>
   </div>
 
   <!-- ── 2. Batch (REST) API ── -->
-  <div class="section">
-    <h2>2. Batch (REST) API 呼び出し</h2>
-    <p class="hint">Authorization: Bearer &lt;token&gt; ヘッダーを付与してリクエストします。</p>
-
-    <label>Method
-      <select id="batchMethod">
-        <option>GET</option>
-        <option>POST</option>
-        <option>PUT</option>
-        <option>DELETE</option>
-      </select>
-    </label>
-    <label>Endpoint URL
-      <input id="batchUrl" type="text" placeholder="https://api.maymobility.com/fleet/v1/..." />
-    </label>
-    <label>Request Body <span class="hint">(POST/PUT 時のみ・JSON)</span>
-      <textarea id="batchBody" placeholder='{"key": "value"}'></textarea>
-    </label>
-
-    <button id="batchBtn" disabled>Batch API 呼び出し</button>
-
-    <label style="margin-top:16px;">レスポンス</label>
-    <pre id="batchResult">-</pre>
+  <div class="accordion" id="section2">
+    <div class="accordion-header" onclick="toggleSection('section2')">
+      <h2>2. Batch (REST) API 呼び出し</h2>
+      <span class="accordion-arrow">▼</span>
+    </div>
+    <div class="accordion-body">
+      <p class="hint">Authorization: Bearer &lt;token&gt; ヘッダーを付与してリクエストします。</p>
+      <label>Method
+        <select id="batchMethod">
+          <option>GET</option>
+          <option>POST</option>
+          <option>PUT</option>
+          <option>DELETE</option>
+        </select>
+      </label>
+      <label>Endpoint URL
+        <input id="batchUrl" type="text" placeholder="https://api.maymobility.com/fleet/v1/..." />
+      </label>
+      <label>Request Body <span class="hint">(POST/PUT 時のみ・JSON)</span>
+        <textarea id="batchBody" placeholder='{"key": "value"}'></textarea>
+      </label>
+      <button id="batchBtn" disabled>Batch API 呼び出し</button>
+      <label style="margin-top:16px;">レスポンス</label>
+      <pre id="batchResult">-</pre>
+    </div>
   </div>
 
   <!-- ── 3. Realtime API ── -->
-  <div class="section">
-    <h2>3. Realtime API 接続</h2>
-    <p class="hint">URL パラメータ <code>?token=&lt;access_token&gt;</code> を付与して WebSocket に接続します。</p>
+  <div class="accordion" id="section3">
+    <div class="accordion-header" onclick="toggleSection('section3')">
+      <h2>3. Realtime API 接続</h2>
+      <span class="accordion-arrow">▼</span>
+    </div>
+    <div class="accordion-body">
+      <p class="hint">URL パラメータ <code>?token=&lt;access_token&gt;</code> を付与して WebSocket に接続します。</p>
+      <label>Base Domain URL
+        <input id="realtimeUrl" type="text" placeholder="wss://realtime.maymobility.com/fleet/stream" />
+      </label>
+      <label>追加パラメータ <span class="hint">(key=value 形式、1行1パラメータ)</span>
+        <textarea id="realtimeParams" placeholder="topic=vehicles&#10;fleet_id=xxx"></textarea>
+      </label>
+      <button id="realtimeBtn" disabled>Realtime 接続</button>
+      <button id="realtimeDisconnectBtn" disabled>切断</button>
+      <label style="margin-top:16px;">接続 URL</label>
+      <pre id="realtimeUrlDisplay">-</pre>
+      <label>受信メッセージ</label>
+      <pre id="realtimeResult">-</pre>
+    </div>
+  </div>
 
-    <label>Base Domain URL
-      <input id="realtimeUrl" type="text" placeholder="wss://realtime.maymobility.com/fleet/stream" />
-    </label>
-    <label>追加パラメータ <span class="hint">(key=value 形式、1行1パラメータ)</span>
-      <textarea id="realtimeParams" placeholder="topic=vehicles&#10;fleet_id=xxx"></textarea>
-    </label>
-
-    <button id="realtimeBtn" disabled>Realtime 接続</button>
-    <button id="realtimeDisconnectBtn" disabled>切断</button>
-
-    <label style="margin-top:16px;">接続 URL</label>
-    <pre id="realtimeUrlDisplay">-</pre>
-    <label>受信メッセージ</label>
-    <pre id="realtimeResult">-</pre>
+  <!-- ── 4. Video Streaming ── -->
+  <div class="accordion" id="section4">
+    <div class="accordion-header" onclick="toggleSection('section4')">
+      <h2>4. Video Streaming</h2>
+      <span class="accordion-arrow">▼</span>
+    </div>
+    <div class="accordion-body">
+      <p class="hint">
+        WebSocket でバイナリ受信 → quic_wrapper protobuf デコード → image_t (VP9/JPEG) → Canvas 描画。<br>
+        最大4車両まで同時受信可能。mqtt_topic に "fc" を含む場合はフロントカメラ等として表示。
+      </p>
+      <label>Video Stream URL (WebSocket)
+        <input id="videoUrl" type="text" placeholder="wss://realtime.maymobility.com/fleet/video" />
+      </label>
+      <label>追加パラメータ <span class="hint">(key=value 形式、1行1パラメータ)</span>
+        <textarea id="videoParams" placeholder="vehicle_id=xxx&#10;camera=fc"></textarea>
+      </label>
+      <button id="videoConnectBtn" disabled>Video 接続</button>
+      <button id="videoDisconnectBtn" disabled>切断</button>
+      <label style="margin-top:12px;">接続 URL</label>
+      <pre id="videoUrlDisplay">-</pre>
+      <label style="margin-top:12px;">受信フレーム表示</label>
+      <div class="video-grid" id="videoGrid"></div>
+      <label style="margin-top:12px;">ログ</label>
+      <pre id="videoLog" style="max-height:180px;overflow-y:auto;">-</pre>
+    </div>
   </div>
 
   <script>
+    // ── アコーディオン ──
+    function toggleSection(id) {
+      document.getElementById(id).classList.toggle("open");
+    }
+
+    // ── 共通状態 ──
     let accessToken = null;
     let ws = null;
 
-    // ── トークン取得 ──
+    // ── 1. トークン取得 ──
     document.getElementById("tokenBtn").addEventListener("click", async () => {
       const url          = document.getElementById("cognitoUrl").value.trim();
       const base64Token  = document.getElementById("base64Token").value.trim();
@@ -175,10 +200,7 @@
         });
 
         const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(JSON.stringify(data));
-        }
+        if (!response.ok) throw new Error(JSON.stringify(data));
 
         accessToken = data.access_token;
         resultEl.className = "ok";
@@ -197,7 +219,7 @@
       }
     });
 
-    // ── Batch API 呼び出し ──
+    // ── 2. Batch API ──
     document.getElementById("batchBtn").addEventListener("click", async () => {
       const method   = document.getElementById("batchMethod").value;
       const url      = document.getElementById("batchUrl").value.trim();
@@ -218,11 +240,8 @@
           "Content-Type": "application/json",
           "Authorization": `Bearer ${accessToken}`,
         };
-
         const options = { method, headers };
-        if (bodyText && (method === "POST" || method === "PUT")) {
-          options.body = bodyText;
-        }
+        if (bodyText && (method === "POST" || method === "PUT")) options.body = bodyText;
 
         const response = await fetch(url, options);
         const contentType = response.headers.get("content-type") || "";
@@ -231,16 +250,14 @@
           : await response.text();
 
         resultEl.className = response.ok ? "" : "error";
-        resultEl.textContent = typeof data === "string"
-          ? data
-          : JSON.stringify(data, null, 2);
+        resultEl.textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
       } catch (err) {
         resultEl.className = "error";
         resultEl.textContent = String(err);
       }
     });
 
-    // ── Realtime API 接続 ──
+    // ── 3. Realtime API ──
     document.getElementById("realtimeBtn").addEventListener("click", () => {
       const baseUrl     = document.getElementById("realtimeUrl").value.trim();
       const extraParams = document.getElementById("realtimeParams").value.trim();
@@ -267,7 +284,6 @@
       resultEl.textContent = "接続中...\n";
 
       if (ws) ws.close();
-
       ws = new WebSocket(fullUrl);
 
       ws.onopen = () => {
@@ -294,25 +310,19 @@
       };
       ws.onclose = (event) => {
         const status = event.wasClean ? "[CLOSED]" : "[CLOSED unexpectedly]";
-        const reason = event.reason || "なし";
-        resultEl.textContent += `${status} code: ${event.code}, reason: ${reason}\n`;
+        resultEl.textContent += `${status} code: ${event.code}, reason: ${event.reason || "なし"}\n`;
         document.getElementById("realtimeDisconnectBtn").disabled = true;
       };
     });
 
     document.getElementById("realtimeDisconnectBtn").addEventListener("click", () => {
-      if (ws) {
-        ws.close();
-        ws = null;
-      }
+      if (ws) { ws.close(); ws = null; }
     });
 
-    // ── Video Streaming ──────────────────────────────────────────────
+    // ── 4. Video Streaming ──────────────────────────────────────────
 
     const MAX_BUFFER_SIZE = 30;
 
-    // quic_wrapper protobuf を手動パース（field/wiretype ベース）
-    // field 1 (int64): utime, field 2 (bytes): data, field 3 (string): mqtt_topic, field 4 (varint): compression
     function decodeVarint(buf, pos) {
       let result = 0n, shift = 0n;
       while (pos < buf.length) {
@@ -329,11 +339,9 @@
       let pos = 0;
       const result = { utime: 0n, data: null, mqtt_topic: "", compression: 0 };
       while (pos < buf.length) {
-        const tagInfo = decodeVarint(buf, pos);
-        pos = tagInfo.pos;
-        const tag = tagInfo.value;
-        const fieldNumber = Number(tag >> 3n);
-        const wireType = Number(tag & 0x7n);
+        const tagInfo = decodeVarint(buf, pos); pos = tagInfo.pos;
+        const fieldNumber = Number(tagInfo.value >> 3n);
+        const wireType    = Number(tagInfo.value & 0x7n);
         if (wireType === 0) {
           const v = decodeVarint(buf, pos); pos = v.pos;
           if (fieldNumber === 1) result.utime = v.value;
@@ -344,26 +352,19 @@
           const slice = buf.slice(pos, pos + len); pos += len;
           if (fieldNumber === 2) result.data = slice;
           if (fieldNumber === 3) result.mqtt_topic = new TextDecoder().decode(slice);
-        } else {
-          break; // 未対応のwireTypeは中断
-        }
+        } else { break; }
       }
       return result;
     }
 
-    // image_t protobuf パース
-    // field 1 (bytes): data, field 2 (varint): encoding, field 3 (varint): frame_type
-    // field 4 (int64): timestamp, field 5 (int64): sequence, field 6 (int64): utime
     function parseImageT(bytes) {
       const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
       let pos = 0;
       const result = { data: null, encoding: 0, frameType: 0, timestamp: 0n, sequence: 0n, utime: 0n };
       while (pos < buf.length) {
-        const tagInfo = decodeVarint(buf, pos);
-        pos = tagInfo.pos;
-        const tag = tagInfo.value;
-        const fieldNumber = Number(tag >> 3n);
-        const wireType = Number(tag & 0x7n);
+        const tagInfo = decodeVarint(buf, pos); pos = tagInfo.pos;
+        const fieldNumber = Number(tagInfo.value >> 3n);
+        const wireType    = Number(tagInfo.value & 0x7n);
         if (wireType === 0) {
           const v = decodeVarint(buf, pos); pos = v.pos;
           if (fieldNumber === 2) result.encoding  = Number(v.value);
@@ -376,36 +377,31 @@
           const len = Number(lenInfo.value);
           const slice = buf.slice(pos, pos + len); pos += len;
           if (fieldNumber === 1) result.data = slice;
-        } else {
-          break;
-        }
+        } else { break; }
       }
       return result;
     }
 
-    // カメラスロット管理
     class CameraSlot {
       constructor(topic) {
         this.topic = topic;
         this.decoder = null;
-        this.cache   = {};
+        this.cache = {};
         this.sequence = undefined;
         this.frameNumber = 0;
         this.frameCount  = 0;
         this.lastFpsTime = performance.now();
         this.fps = 0;
 
-        // DOM 生成
-        this.slot = document.createElement("div");
+        this.slot   = document.createElement("div");
         this.slot.className = "video-slot";
         this.canvas = document.createElement("canvas");
-        this.canvas.width  = 640;
-        this.canvas.height = 360;
-        this.ctx = this.canvas.getContext("2d");
-        this.label = document.createElement("div");
+        this.canvas.width = 640; this.canvas.height = 360;
+        this.ctx    = this.canvas.getContext("2d");
+        this.label  = document.createElement("div");
         this.label.className = "cam-label";
         this.label.textContent = topic;
-        this.stats = document.createElement("div");
+        this.stats  = document.createElement("div");
         this.stats.className = "cam-stats";
         this.stats.textContent = "0 fps";
         this.slot.append(this.canvas, this.label, this.stats);
@@ -436,7 +432,6 @@
         this.decoder.configure({ codec: "vp09.00.10.08", optimizeForLatency: true });
       }
 
-      // JPEG はそのまま Canvas に描画
       _drawJpeg(data) {
         const blob = new Blob([data], { type: "image/jpeg" });
         const url  = URL.createObjectURL(blob);
@@ -452,11 +447,7 @@
       }
 
       _decode(image) {
-        // encoding: 1=JPEG, 2=VP8, 3=VP9
-        if (image.encoding === 1) {
-          this._drawJpeg(image.data);
-          return;
-        }
+        if (image.encoding === 1) { this._drawJpeg(image.data); return; }
         if (!this.decoder || this.decoder.state === "closed") this._initDecoder();
         const frameType = image.frameType === 1 ? "key" : "delta";
         try {
@@ -470,7 +461,6 @@
         }
       }
 
-      // ドキュメントのシーケンシングロジック
       feed(image) {
         const newSeq   = Number(image.sequence);
         const newFrame = Number(image.timestamp);
@@ -482,13 +472,13 @@
         const frameType = image.frameType === 1 ? "key" : "delta";
         const cacheSize = Object.keys(this.cache).length;
         if (this.sequence === undefined && frameType === "key") {
-          this._decodeAndSet(image, frameType);
+          this._decodeAndSet(image);
         } else if (this.sequence !== undefined) {
-          const isFuture      = newSeq > this.sequence;
-          const isFutureKey   = isFuture && frameType === "key";
-          const isNext        = newSeq === this.sequence + 1;
+          const isFuture    = newSeq > this.sequence;
+          const isFutureKey = isFuture && frameType === "key";
+          const isNext      = newSeq === this.sequence + 1;
           if (isFutureKey || isNext) {
-            this._decodeAndSet(image, frameType);
+            this._decodeAndSet(image);
             this._playQueued();
             this._pruneOlder(this.sequence);
           } else {
@@ -504,7 +494,7 @@
         }
       }
 
-      _decodeAndSet(image, frameType) {
+      _decodeAndSet(image) {
         this._decode(image);
         const seq = Number(image.sequence);
         this.sequence    = seq > 0 ? seq : undefined;
@@ -518,7 +508,7 @@
           if (seq < this.sequence + 1) continue;
           if (seq === this.sequence + 1) {
             const f = this.cache[seq];
-            if (f) this._decodeAndSet(f, f.frameType === 1 ? "key" : "delta");
+            if (f) this._decodeAndSet(f);
           } else break;
         }
       }
@@ -533,7 +523,7 @@
           else if (this.sequence && seq > this.sequence && img?.frameType === 1) next = seq;
           else { skip = true; next = undefined; }
           if (next !== undefined && !skip) {
-            this._decodeAndSet(this.cache[next], this.cache[next].frameType === 1 ? "key" : "delta");
+            this._decodeAndSet(this.cache[next]);
             delete this.cache[next];
           } else if (this.sequence && seq < this.sequence) {
             delete this.cache[seq];
@@ -553,7 +543,6 @@
       }
     }
 
-    // カメラスロットのマップ (mqtt_topic → CameraSlot)
     const cameraSlots = new Map();
     let videoWs = null;
 
@@ -575,11 +564,9 @@
       return cameraSlots.get(topic);
     }
 
-    // ZSTD 解凍（ブラウザ未対応のため警告）
     function maybeDecompress(data, compression) {
-      if (compression === 0) return data; // NONE
-      // compression === 1: ZSTD — ブラウザ標準 API 未対応
-      videoLog("[warn] ZSTD 圧縮データを受信しましたが、ブラウザは ZSTD に未対応です。DecompressionStream は gzip/deflate のみサポートします。");
+      if (compression === 0) return data;
+      videoLog("[warn] ZSTD 圧縮データを受信しましたが、ブラウザは ZSTD に未対応です。");
       return null;
     }
 
@@ -588,10 +575,7 @@
       const extraParams = document.getElementById("videoParams").value.trim();
       const urlDisplay  = document.getElementById("videoUrlDisplay");
 
-      if (!baseUrl) {
-        videoLog("[error] Video Stream URL は必須です。");
-        return;
-      }
+      if (!baseUrl) { videoLog("[error] Video Stream URL は必須です。"); return; }
 
       const params = new URLSearchParams({ token: accessToken });
       if (extraParams) {
@@ -604,14 +588,12 @@
       const fullUrl = `${baseUrl}?${params.toString()}`;
       urlDisplay.textContent = fullUrl;
 
-      // 既存スロットをクリア
       cameraSlots.forEach(slot => slot.destroy());
       cameraSlots.clear();
       document.getElementById("videoGrid").innerHTML = "";
       document.getElementById("videoLog").textContent = "接続中...\n";
 
       if (videoWs) videoWs.close();
-
       videoWs = new WebSocket(fullUrl);
       videoWs.binaryType = "arraybuffer";
 
@@ -620,27 +602,20 @@
         document.getElementById("videoDisconnectBtn").disabled = false;
         document.getElementById("videoConnectBtn").disabled = true;
       };
-
       videoWs.onmessage = (event) => {
         try {
           const wrapper = parseQuicWrapper(event.data);
-          let imageData = wrapper.data;
+          if (!wrapper.data) return;
+          const imageData = maybeDecompress(wrapper.data, wrapper.compression);
           if (!imageData) return;
-
-          imageData = maybeDecompress(imageData, wrapper.compression);
-          if (!imageData) return;
-
           const image = parseImageT(imageData);
           if (!image.data) return;
-
-          const topic = wrapper.mqtt_topic || "unknown";
-          const slot  = getOrCreateSlot(topic);
+          const slot = getOrCreateSlot(wrapper.mqtt_topic || "unknown");
           if (slot) slot.feed(image);
         } catch (e) {
           videoLog(`[error] メッセージ処理エラー: ${e.message}`);
         }
       };
-
       videoWs.onerror = (event) => {
         const detail = [
           `type: ${event.type}`,
@@ -648,7 +623,6 @@
         ].filter(Boolean).join(", ");
         videoLog(`[ERROR] ${detail || "詳細情報なし (ブラウザのセキュリティポリシーにより制限)"}`);
       };
-
       videoWs.onclose = (event) => {
         const status = event.wasClean ? "[CLOSED]" : "[CLOSED unexpectedly]";
         videoLog(`${status} code: ${event.code}, reason: ${event.reason || "なし"}`);
