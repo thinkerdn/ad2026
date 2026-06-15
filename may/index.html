@@ -23,6 +23,11 @@
     .hint  { color: #666; font-size: 0.85em; font-weight: normal; }
     .section { background: #fafafa; border: 1px solid #e0e0e0; border-radius: 6px; padding: 16px; margin-top: 24px; }
     .token-display { font-size: 0.8em; word-break: break-all; color: #333; }
+    .video-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 12px; }
+    .video-slot { background: #111; position: relative; border-radius: 4px; overflow: hidden; min-height: 80px; }
+    .video-slot canvas { width: 100%; display: block; }
+    .cam-label { position: absolute; top: 4px; left: 4px; color: #fff; background: rgba(0,0,0,0.6); padding: 2px 6px; font-size: 0.75em; border-radius: 3px; pointer-events: none; }
+    .cam-stats { position: absolute; bottom: 4px; right: 4px; color: #0f0; background: rgba(0,0,0,0.6); padding: 2px 6px; font-size: 0.7em; border-radius: 3px; pointer-events: none; font-family: monospace; }
   </style>
 </head>
 <body>
@@ -52,6 +57,34 @@
 
     <label style="margin-top:16px;">取得したアクセストークン</label>
     <pre id="tokenResult" class="token-display">-</pre>
+  </div>
+
+  <!-- ── 4. Video Streaming ── -->
+  <div class="section">
+    <h2>4. Video Streaming</h2>
+    <p class="hint">
+      WebSocket でバイナリ受信 → quic_wrapper protobuf デコード → image_t (VP9/JPEG) → Canvas 描画。<br>
+      最大4車両まで同時受信可能。mqtt_topic に "fc" を含む場合はフロントカメラ等として表示。
+    </p>
+
+    <label>Video Stream URL (WebSocket)
+      <input id="videoUrl" type="text" placeholder="wss://realtime.maymobility.com/fleet/video" />
+    </label>
+    <label>追加パラメータ <span class="hint">(key=value 形式、1行1パラメータ)</span>
+      <textarea id="videoParams" placeholder="vehicle_id=xxx&#10;camera=fc"></textarea>
+    </label>
+
+    <button id="videoConnectBtn" disabled>Video 接続</button>
+    <button id="videoDisconnectBtn" disabled>切断</button>
+
+    <label style="margin-top:12px;">接続 URL</label>
+    <pre id="videoUrlDisplay">-</pre>
+
+    <label style="margin-top:12px;">受信フレーム表示</label>
+    <div class="video-grid" id="videoGrid"></div>
+
+    <label style="margin-top:12px;">ログ</label>
+    <pre id="videoLog" style="max-height:180px;overflow-y:auto;">-</pre>
   </div>
 
   <!-- ── 2. Batch (REST) API ── -->
@@ -153,12 +186,14 @@
 
         document.getElementById("batchBtn").disabled = false;
         document.getElementById("realtimeBtn").disabled = false;
+        document.getElementById("videoConnectBtn").disabled = false;
       } catch (err) {
         resultEl.className = "error";
         resultEl.textContent = String(err);
         accessToken = null;
         document.getElementById("batchBtn").disabled = true;
         document.getElementById("realtimeBtn").disabled = true;
+        document.getElementById("videoConnectBtn").disabled = true;
       }
     });
 
@@ -271,6 +306,364 @@
         ws = null;
       }
     });
+
+    // ── Video Streaming ──────────────────────────────────────────────
+
+    const MAX_BUFFER_SIZE = 30;
+
+    // quic_wrapper protobuf を手動パース（field/wiretype ベース）
+    // field 1 (int64): utime, field 2 (bytes): data, field 3 (string): mqtt_topic, field 4 (varint): compression
+    function decodeVarint(buf, pos) {
+      let result = 0n, shift = 0n;
+      while (pos < buf.length) {
+        const b = BigInt(buf[pos++]);
+        result |= (b & 0x7fn) << shift;
+        shift += 7n;
+        if (!(b & 0x80n)) break;
+      }
+      return { value: result, pos };
+    }
+
+    function parseQuicWrapper(bytes) {
+      const buf = new Uint8Array(bytes);
+      let pos = 0;
+      const result = { utime: 0n, data: null, mqtt_topic: "", compression: 0 };
+      while (pos < buf.length) {
+        const tagInfo = decodeVarint(buf, pos);
+        pos = tagInfo.pos;
+        const tag = tagInfo.value;
+        const fieldNumber = Number(tag >> 3n);
+        const wireType = Number(tag & 0x7n);
+        if (wireType === 0) {
+          const v = decodeVarint(buf, pos); pos = v.pos;
+          if (fieldNumber === 1) result.utime = v.value;
+          if (fieldNumber === 4) result.compression = Number(v.value);
+        } else if (wireType === 2) {
+          const lenInfo = decodeVarint(buf, pos); pos = lenInfo.pos;
+          const len = Number(lenInfo.value);
+          const slice = buf.slice(pos, pos + len); pos += len;
+          if (fieldNumber === 2) result.data = slice;
+          if (fieldNumber === 3) result.mqtt_topic = new TextDecoder().decode(slice);
+        } else {
+          break; // 未対応のwireTypeは中断
+        }
+      }
+      return result;
+    }
+
+    // image_t protobuf パース
+    // field 1 (bytes): data, field 2 (varint): encoding, field 3 (varint): frame_type
+    // field 4 (int64): timestamp, field 5 (int64): sequence, field 6 (int64): utime
+    function parseImageT(bytes) {
+      const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+      let pos = 0;
+      const result = { data: null, encoding: 0, frameType: 0, timestamp: 0n, sequence: 0n, utime: 0n };
+      while (pos < buf.length) {
+        const tagInfo = decodeVarint(buf, pos);
+        pos = tagInfo.pos;
+        const tag = tagInfo.value;
+        const fieldNumber = Number(tag >> 3n);
+        const wireType = Number(tag & 0x7n);
+        if (wireType === 0) {
+          const v = decodeVarint(buf, pos); pos = v.pos;
+          if (fieldNumber === 2) result.encoding  = Number(v.value);
+          if (fieldNumber === 3) result.frameType  = Number(v.value);
+          if (fieldNumber === 4) result.timestamp  = v.value;
+          if (fieldNumber === 5) result.sequence   = v.value;
+          if (fieldNumber === 6) result.utime      = v.value;
+        } else if (wireType === 2) {
+          const lenInfo = decodeVarint(buf, pos); pos = lenInfo.pos;
+          const len = Number(lenInfo.value);
+          const slice = buf.slice(pos, pos + len); pos += len;
+          if (fieldNumber === 1) result.data = slice;
+        } else {
+          break;
+        }
+      }
+      return result;
+    }
+
+    // カメラスロット管理
+    class CameraSlot {
+      constructor(topic) {
+        this.topic = topic;
+        this.decoder = null;
+        this.cache   = {};
+        this.sequence = undefined;
+        this.frameNumber = 0;
+        this.frameCount  = 0;
+        this.lastFpsTime = performance.now();
+        this.fps = 0;
+
+        // DOM 生成
+        this.slot = document.createElement("div");
+        this.slot.className = "video-slot";
+        this.canvas = document.createElement("canvas");
+        this.canvas.width  = 640;
+        this.canvas.height = 360;
+        this.ctx = this.canvas.getContext("2d");
+        this.label = document.createElement("div");
+        this.label.className = "cam-label";
+        this.label.textContent = topic;
+        this.stats = document.createElement("div");
+        this.stats.className = "cam-stats";
+        this.stats.textContent = "0 fps";
+        this.slot.append(this.canvas, this.label, this.stats);
+        document.getElementById("videoGrid").appendChild(this.slot);
+
+        this._initDecoder();
+      }
+
+      _initDecoder() {
+        if (!("VideoDecoder" in window)) return;
+        this.decoder = new VideoDecoder({
+          output: (frame) => {
+            this.canvas.width  = frame.displayWidth;
+            this.canvas.height = frame.displayHeight;
+            this.ctx.drawImage(frame, 0, 0);
+            frame.close();
+            this.frameCount++;
+            const now = performance.now();
+            if (now - this.lastFpsTime >= 1000) {
+              this.fps = Math.round(this.frameCount * 1000 / (now - this.lastFpsTime));
+              this.frameCount = 0;
+              this.lastFpsTime = now;
+              this.stats.textContent = `${this.fps} fps`;
+            }
+          },
+          error: (e) => videoLog(`[${this.topic}] decoder error: ${e.message}`),
+        });
+        this.decoder.configure({ codec: "vp09.00.10.08", optimizeForLatency: true });
+      }
+
+      // JPEG はそのまま Canvas に描画
+      _drawJpeg(data) {
+        const blob = new Blob([data], { type: "image/jpeg" });
+        const url  = URL.createObjectURL(blob);
+        const img  = new Image();
+        img.onload = () => {
+          this.canvas.width  = img.naturalWidth;
+          this.canvas.height = img.naturalHeight;
+          this.ctx.drawImage(img, 0, 0);
+          URL.revokeObjectURL(url);
+          this.frameCount++;
+        };
+        img.src = url;
+      }
+
+      _decode(image) {
+        // encoding: 1=JPEG, 2=VP8, 3=VP9
+        if (image.encoding === 1) {
+          this._drawJpeg(image.data);
+          return;
+        }
+        if (!this.decoder || this.decoder.state === "closed") this._initDecoder();
+        const frameType = image.frameType === 1 ? "key" : "delta";
+        try {
+          this.decoder.decode(new EncodedVideoChunk({
+            type: frameType,
+            timestamp: Number(image.timestamp),
+            data: image.data,
+          }));
+        } catch (e) {
+          videoLog(`[${this.topic}] decode error: ${e.message}`);
+        }
+      }
+
+      // ドキュメントのシーケンシングロジック
+      feed(image) {
+        const newSeq   = Number(image.sequence);
+        const newFrame = Number(image.timestamp);
+        if (newFrame === 0 && newSeq === 0) return;
+        this._decodingWithFrameSequencing(image, newSeq);
+      }
+
+      _decodingWithFrameSequencing(image, newSeq) {
+        const frameType = image.frameType === 1 ? "key" : "delta";
+        const cacheSize = Object.keys(this.cache).length;
+        if (this.sequence === undefined && frameType === "key") {
+          this._decodeAndSet(image, frameType);
+        } else if (this.sequence !== undefined) {
+          const isFuture      = newSeq > this.sequence;
+          const isFutureKey   = isFuture && frameType === "key";
+          const isNext        = newSeq === this.sequence + 1;
+          if (isFutureKey || isNext) {
+            this._decodeAndSet(image, frameType);
+            this._playQueued();
+            this._pruneOlder(this.sequence);
+          } else {
+            if (this.cache[this.sequence + 1]) {
+              this._playQueued();
+              this._pruneOlder(this.sequence);
+            }
+            if (isFuture) {
+              this.cache[newSeq] = image;
+              if (cacheSize + 1 > MAX_BUFFER_SIZE) this._fastForward();
+            }
+          }
+        }
+      }
+
+      _decodeAndSet(image, frameType) {
+        this._decode(image);
+        const seq = Number(image.sequence);
+        this.sequence    = seq > 0 ? seq : undefined;
+        this.frameNumber = Number(image.timestamp);
+      }
+
+      _playQueued() {
+        if (this.sequence === undefined) return;
+        const sorted = Object.keys(this.cache).map(Number).sort((a, b) => a - b);
+        for (const seq of sorted) {
+          if (seq < this.sequence + 1) continue;
+          if (seq === this.sequence + 1) {
+            const f = this.cache[seq];
+            if (f) this._decodeAndSet(f, f.frameType === 1 ? "key" : "delta");
+          } else break;
+        }
+      }
+
+      _fastForward() {
+        const sorted = Object.keys(this.cache).map(Number).sort((a, b) => a - b);
+        let next = undefined, skip = false;
+        sorted.forEach((seq, idx) => {
+          const img = this.cache[seq];
+          if (idx === 0) next = seq;
+          else if (seq === sorted[idx - 1] + 1) next = seq;
+          else if (this.sequence && seq > this.sequence && img?.frameType === 1) next = seq;
+          else { skip = true; next = undefined; }
+          if (next !== undefined && !skip) {
+            this._decodeAndSet(this.cache[next], this.cache[next].frameType === 1 ? "key" : "delta");
+            delete this.cache[next];
+          } else if (this.sequence && seq < this.sequence) {
+            delete this.cache[seq];
+          }
+        });
+      }
+
+      _pruneOlder(minSeq) {
+        Object.keys(this.cache).forEach(seq => {
+          if (parseInt(seq) < minSeq) delete this.cache[seq];
+        });
+      }
+
+      destroy() {
+        if (this.decoder && this.decoder.state !== "closed") this.decoder.close();
+        this.slot.remove();
+      }
+    }
+
+    // カメラスロットのマップ (mqtt_topic → CameraSlot)
+    const cameraSlots = new Map();
+    let videoWs = null;
+
+    function videoLog(msg) {
+      const el = document.getElementById("videoLog");
+      el.textContent = (el.textContent === "-" ? "" : el.textContent) + msg + "\n";
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function getOrCreateSlot(topic) {
+      if (!cameraSlots.has(topic)) {
+        if (cameraSlots.size >= 4) {
+          videoLog(`[warn] 最大4スロット到達。トピック "${topic}" はスキップします。`);
+          return null;
+        }
+        cameraSlots.set(topic, new CameraSlot(topic));
+        videoLog(`[info] カメラスロット追加: ${topic}`);
+      }
+      return cameraSlots.get(topic);
+    }
+
+    // ZSTD 解凍（ブラウザ未対応のため警告）
+    function maybeDecompress(data, compression) {
+      if (compression === 0) return data; // NONE
+      // compression === 1: ZSTD — ブラウザ標準 API 未対応
+      videoLog("[warn] ZSTD 圧縮データを受信しましたが、ブラウザは ZSTD に未対応です。DecompressionStream は gzip/deflate のみサポートします。");
+      return null;
+    }
+
+    document.getElementById("videoConnectBtn").addEventListener("click", () => {
+      const baseUrl     = document.getElementById("videoUrl").value.trim();
+      const extraParams = document.getElementById("videoParams").value.trim();
+      const urlDisplay  = document.getElementById("videoUrlDisplay");
+
+      if (!baseUrl) {
+        videoLog("[error] Video Stream URL は必須です。");
+        return;
+      }
+
+      const params = new URLSearchParams({ token: accessToken });
+      if (extraParams) {
+        extraParams.split("\n").forEach(line => {
+          const [k, ...v] = line.split("=");
+          if (k && v.length) params.set(k.trim(), v.join("=").trim());
+        });
+      }
+
+      const fullUrl = `${baseUrl}?${params.toString()}`;
+      urlDisplay.textContent = fullUrl;
+
+      // 既存スロットをクリア
+      cameraSlots.forEach(slot => slot.destroy());
+      cameraSlots.clear();
+      document.getElementById("videoGrid").innerHTML = "";
+      document.getElementById("videoLog").textContent = "接続中...\n";
+
+      if (videoWs) videoWs.close();
+
+      videoWs = new WebSocket(fullUrl);
+      videoWs.binaryType = "arraybuffer";
+
+      videoWs.onopen = () => {
+        videoLog("✓ Video WebSocket 接続しました");
+        document.getElementById("videoDisconnectBtn").disabled = false;
+        document.getElementById("videoConnectBtn").disabled = true;
+      };
+
+      videoWs.onmessage = (event) => {
+        try {
+          const wrapper = parseQuicWrapper(event.data);
+          let imageData = wrapper.data;
+          if (!imageData) return;
+
+          imageData = maybeDecompress(imageData, wrapper.compression);
+          if (!imageData) return;
+
+          const image = parseImageT(imageData);
+          if (!image.data) return;
+
+          const topic = wrapper.mqtt_topic || "unknown";
+          const slot  = getOrCreateSlot(topic);
+          if (slot) slot.feed(image);
+        } catch (e) {
+          videoLog(`[error] メッセージ処理エラー: ${e.message}`);
+        }
+      };
+
+      videoWs.onerror = (event) => {
+        const detail = [
+          `type: ${event.type}`,
+          event.message ? `message: ${event.message}` : null,
+        ].filter(Boolean).join(", ");
+        videoLog(`[ERROR] ${detail || "詳細情報なし (ブラウザのセキュリティポリシーにより制限)"}`);
+      };
+
+      videoWs.onclose = (event) => {
+        const status = event.wasClean ? "[CLOSED]" : "[CLOSED unexpectedly]";
+        videoLog(`${status} code: ${event.code}, reason: ${event.reason || "なし"}`);
+        document.getElementById("videoDisconnectBtn").disabled = true;
+        document.getElementById("videoConnectBtn").disabled = false;
+      };
+    });
+
+    document.getElementById("videoDisconnectBtn").addEventListener("click", () => {
+      if (videoWs) { videoWs.close(); videoWs = null; }
+      cameraSlots.forEach(slot => slot.destroy());
+      cameraSlots.clear();
+      document.getElementById("videoGrid").innerHTML = "";
+    });
+
   </script>
 </body>
 </html>
