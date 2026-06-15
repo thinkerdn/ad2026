@@ -247,12 +247,20 @@
           resultEl.textContent += event.data + "\n---\n";
         }
       };
-      ws.onerror = () => {
+      ws.onerror = (event) => {
         resultEl.className = "error";
-        resultEl.textContent += "WebSocket エラーが発生しました。\n";
+        const detail = [
+          `type: ${event.type}`,
+          event.message ? `message: ${event.message}` : null,
+          event.filename ? `filename: ${event.filename}` : null,
+          event.lineno != null ? `lineno: ${event.lineno}` : null,
+        ].filter(Boolean).join(", ");
+        resultEl.textContent += `[ERROR] ${detail || "詳細情報なし (ブラウザのセキュリティポリシーにより制限)"}\n`;
       };
-      ws.onclose = () => {
-        resultEl.textContent += "接続が閉じられました。\n";
+      ws.onclose = (event) => {
+        const status = event.wasClean ? "[CLOSED]" : "[CLOSED unexpectedly]";
+        const reason = event.reason || "なし";
+        resultEl.textContent += `${status} code: ${event.code}, reason: ${reason}\n`;
         document.getElementById("realtimeDisconnectBtn").disabled = true;
       };
     });
