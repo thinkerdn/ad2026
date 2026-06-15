@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>May Mobility Fleet API</title>
+  <style>
+    body { font-family: sans-serif; max-width: 700px; margin: 40px auto; padding: 0 16px; }
+    h2 { margin-top: 32px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+    label { display: block; margin-top: 12px; font-weight: bold; }
+    input, textarea, select {
+      width: 100%; padding: 6px; margin-top: 4px;
+      box-sizing: border-box; font-family: monospace;
+    }
+    textarea { height: 72px; resize: vertical; }
+    button { margin-top: 14px; padding: 8px 20px; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    pre {
+      background: #f4f4f4; padding: 12px; overflow-x: auto;
+      white-space: pre-wrap; word-break: break-all; min-height: 40px;
+    }
+    .error { color: red; }
+    .ok    { color: green; }
+    .hint  { color: #666; font-size: 0.85em; font-weight: normal; }
+    .section { background: #fafafa; border: 1px solid #e0e0e0; border-radius: 6px; padding: 16px; margin-top: 24px; }
+    .token-display { font-size: 0.8em; word-break: break-all; color: #333; }
+  </style>
+</head>
+<body>
+  <h1>May Mobility Fleet API クライアント</h1>
+
+  <!-- ── 1. 認証設定 ── -->
+  <div class="section">
+    <h2>1. 認証設定 (AWS Cognito)</h2>
+
+    <label>Cognito Token URL
+      <input id="cognitoUrl" type="text" placeholder="https://your-domain.auth.us-east-1.amazoncognito.com/oauth2/token" />
+    </label>
+    <label>Base64 Token <span class="hint">(Fleet API チームから提供)</span>
+      <input id="base64Token" type="password" placeholder="provided-by-fleet-api-team" />
+    </label>
+    <label>Client ID
+      <input id="clientId" type="text" placeholder="provided-by-fleet-api-team" />
+    </label>
+    <label>Client Secret
+      <input id="clientSecret" type="password" placeholder="provided-by-fleet-api-team" />
+    </label>
+    <label>Scope
+      <input id="scope" type="text" placeholder="provided-by-fleet-api-team" />
+    </label>
+
+    <button id="tokenBtn">トークン取得</button>
+
+    <label style="margin-top:16px;">取得したアクセストークン</label>
+    <pre id="tokenResult" class="token-display">-</pre>
+  </div>
+
+  <!-- ── 2. Batch (REST) API ── -->
+  <div class="section">
+    <h2>2. Batch (REST) API 呼び出し</h2>
+    <p class="hint">Authorization: Bearer &lt;token&gt; ヘッダーを付与してリクエストします。</p>
+
+    <label>Method
+      <select id="batchMethod">
+        <option>GET</option>
+        <option>POST</option>
+        <option>PUT</option>
+        <option>DELETE</option>
+      </select>
+    </label>
+    <label>Endpoint URL
+      <input id="batchUrl" type="text" placeholder="https://api.maymobility.com/fleet/v1/..." />
+    </label>
+    <label>Request Body <span class="hint">(POST/PUT 時のみ・JSON)</span>
+      <textarea id="batchBody" placeholder='{"key": "value"}'></textarea>
+    </label>
+
+    <button id="batchBtn" disabled>Batch API 呼び出し</button>
+
+    <label style="margin-top:16px;">レスポンス</label>
+    <pre id="batchResult">-</pre>
+  </div>
+
+  <!-- ── 3. Realtime API ── -->
+  <div class="section">
+    <h2>3. Realtime API 接続</h2>
+    <p class="hint">URL パラメータ <code>?token=&lt;access_token&gt;</code> を付与して WebSocket に接続します。</p>
+
+    <label>Base Domain URL
+      <input id="realtimeUrl" type="text" placeholder="wss://realtime.maymobility.com/fleet/stream" />
+    </label>
+    <label>追加パラメータ <span class="hint">(key=value 形式、1行1パラメータ)</span>
+      <textarea id="realtimeParams" placeholder="topic=vehicles&#10;fleet_id=xxx"></textarea>
+    </label>
+
+    <button id="realtimeBtn" disabled>Realtime 接続</button>
+    <button id="realtimeDisconnectBtn" disabled>切断</button>
+
+    <label style="margin-top:16px;">接続 URL</label>
+    <pre id="realtimeUrlDisplay">-</pre>
+    <label>受信メッセージ</label>
+    <pre id="realtimeResult">-</pre>
+  </div>
+
+  <script>
+    let accessToken = null;
+    let ws = null;
+
+    // ── トークン取得 ──
+    document.getElementById("tokenBtn").addEventListener("click", async () => {
+      const url          = document.getElementById("cognitoUrl").value.trim();
+      const base64Token  = document.getElementById("base64Token").value.trim();
+      const clientId     = document.getElementById("clientId").value.trim();
+      const clientSecret = document.getElementById("clientSecret").value.trim();
+      const scope        = document.getElementById("scope").value.trim();
+      const resultEl     = document.getElementById("tokenResult");
+
+      if (!url || !base64Token || !clientId || !clientSecret || !scope) {
+        resultEl.textContent = "すべての認証フィールドは必須です。";
+        resultEl.className = "error";
+        return;
+      }
+
+      resultEl.className = "";
+      resultEl.textContent = "取得中...";
+
+      try {
+        const body = new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: clientId,
+          client_secret: clientSecret,
+          scope: scope,
+        });
+
+        const response = await fetch(url, {
+          method: "POST",
+          mode: "cors",
+          headers: {
+            "Authorization": `Basic ${base64Token}`,
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          },
+          body,
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(JSON.stringify(data));
+        }
+
+        accessToken = data.access_token;
+        resultEl.className = "ok";
+        resultEl.textContent = accessToken;
+
+        document.getElementById("batchBtn").disabled = false;
+        document.getElementById("realtimeBtn").disabled = false;
+      } catch (err) {
+        resultEl.className = "error";
+        resultEl.textContent = String(err);
+        accessToken = null;
+        document.getElementById("batchBtn").disabled = true;
+        document.getElementById("realtimeBtn").disabled = true;
+      }
+    });
+
+    // ── Batch API 呼び出し ──
+    document.getElementById("batchBtn").addEventListener("click", async () => {
+      const method   = document.getElementById("batchMethod").value;
+      const url      = document.getElementById("batchUrl").value.trim();
+      const bodyText = document.getElementById("batchBody").value.trim();
+      const resultEl = document.getElementById("batchResult");
+
+      if (!url) {
+        resultEl.textContent = "Endpoint URL は必須です。";
+        resultEl.className = "error";
+        return;
+      }
+
+      resultEl.className = "";
+      resultEl.textContent = "リクエスト中...";
+
+      try {
+        const headers = {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${accessToken}`,
+        };
+
+        const options = { method, headers };
+        if (bodyText && (method === "POST" || method === "PUT")) {
+          options.body = bodyText;
+        }
+
+        const response = await fetch(url, options);
+        const contentType = response.headers.get("content-type") || "";
+        const data = contentType.includes("application/json")
+          ? await response.json()
+          : await response.text();
+
+        resultEl.className = response.ok ? "" : "error";
+        resultEl.textContent = typeof data === "string"
+          ? data
+          : JSON.stringify(data, null, 2);
+      } catch (err) {
+        resultEl.className = "error";
+        resultEl.textContent = String(err);
+      }
+    });
+
+    // ── Realtime API 接続 ──
+    document.getElementById("realtimeBtn").addEventListener("click", () => {
+      const baseUrl     = document.getElementById("realtimeUrl").value.trim();
+      const extraParams = document.getElementById("realtimeParams").value.trim();
+      const urlDisplay  = document.getElementById("realtimeUrlDisplay");
+      const resultEl    = document.getElementById("realtimeResult");
+
+      if (!baseUrl) {
+        resultEl.textContent = "Base Domain URL は必須です。";
+        resultEl.className = "error";
+        return;
+      }
+
+      const params = new URLSearchParams({ token: accessToken });
+      if (extraParams) {
+        extraParams.split("\n").forEach(line => {
+          const [k, ...v] = line.split("=");
+          if (k && v.length) params.set(k.trim(), v.join("=").trim());
+        });
+      }
+
+      const fullUrl = `${baseUrl}?${params.toString()}`;
+      urlDisplay.textContent = fullUrl;
+      resultEl.className = "";
+      resultEl.textContent = "接続中...\n";
+
+      if (ws) ws.close();
+
+      ws = new WebSocket(fullUrl);
+
+      ws.onopen = () => {
+        resultEl.textContent = "✓ 接続しました\n";
+        document.getElementById("realtimeDisconnectBtn").disabled = false;
+      };
+      ws.onmessage = (event) => {
+        try {
+          const parsed = JSON.parse(event.data);
+          resultEl.textContent += JSON.stringify(parsed, null, 2) + "\n---\n";
+        } catch {
+          resultEl.textContent += event.data + "\n---\n";
+        }
+      };
+      ws.onerror = () => {
+        resultEl.className = "error";
+        resultEl.textContent += "WebSocket エラーが発生しました。\n";
+      };
+      ws.onclose = () => {
+        resultEl.textContent += "接続が閉じられました。\n";
+        document.getElementById("realtimeDisconnectBtn").disabled = true;
+      };
+    });
+
+    document.getElementById("realtimeDisconnectBtn").addEventListener("click", () => {
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
+    });
+  </script>
+</body>
+</html>
