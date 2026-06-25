@@ -323,6 +323,7 @@
 
     const MAX_BUFFER_SIZE = 30;
 
+    // protobuf varint デコード
     function decodeVarint(buf, pos) {
       let result = 0n, shift = 0n;
       while (pos < buf.length) {
@@ -334,52 +335,59 @@
       return { value: result, pos };
     }
 
-    function parseQuicWrapper(bytes) {
-      const buf = new Uint8Array(bytes);
+    // protobuf 汎用フィールドパーサー (wireType 1/5 も正しくスキップ)
+    function parseProto(bytes) {
+      const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
       let pos = 0;
-      const result = { utime: 0n, data: null, mqtt_topic: "", compression: 0 };
+      const fields = {};
       while (pos < buf.length) {
-        const tagInfo = decodeVarint(buf, pos); pos = tagInfo.pos;
+        const startPos = pos;
+        const tagInfo = decodeVarint(buf, pos);
+        if (tagInfo.pos === startPos) break;
+        pos = tagInfo.pos;
         const fieldNumber = Number(tagInfo.value >> 3n);
         const wireType    = Number(tagInfo.value & 0x7n);
         if (wireType === 0) {
           const v = decodeVarint(buf, pos); pos = v.pos;
-          if (fieldNumber === 1) result.utime = v.value;
-          if (fieldNumber === 4) result.compression = Number(v.value);
+          fields[fieldNumber] = v.value;
+        } else if (wireType === 1) {
+          pos += 8; // fixed64 スキップ
         } else if (wireType === 2) {
           const lenInfo = decodeVarint(buf, pos); pos = lenInfo.pos;
           const len = Number(lenInfo.value);
-          const slice = buf.slice(pos, pos + len); pos += len;
-          if (fieldNumber === 2) result.data = slice;
-          if (fieldNumber === 3) result.mqtt_topic = new TextDecoder().decode(slice);
-        } else { break; }
+          if (pos + len > buf.length) break;
+          fields[fieldNumber] = buf.slice(pos, pos + len);
+          pos += len;
+        } else if (wireType === 5) {
+          pos += 4; // fixed32 スキップ
+        } else {
+          videoLog(`[warn] 未知のwireType ${wireType} field ${fieldNumber}、パース中断`);
+          break;
+        }
       }
-      return result;
+      return fields;
+    }
+
+    function parseQuicWrapper(bytes) {
+      const f = parseProto(bytes);
+      return {
+        utime:       f[1] ?? 0n,
+        data:        f[2] ?? null,
+        mqtt_topic:  f[3] ? new TextDecoder().decode(f[3]) : "",
+        compression: f[4] != null ? Number(f[4]) : 0,
+      };
     }
 
     function parseImageT(bytes) {
-      const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-      let pos = 0;
-      const result = { data: null, encoding: 0, frameType: 0, timestamp: 0n, sequence: 0n, utime: 0n };
-      while (pos < buf.length) {
-        const tagInfo = decodeVarint(buf, pos); pos = tagInfo.pos;
-        const fieldNumber = Number(tagInfo.value >> 3n);
-        const wireType    = Number(tagInfo.value & 0x7n);
-        if (wireType === 0) {
-          const v = decodeVarint(buf, pos); pos = v.pos;
-          if (fieldNumber === 2) result.encoding  = Number(v.value);
-          if (fieldNumber === 3) result.frameType  = Number(v.value);
-          if (fieldNumber === 4) result.timestamp  = v.value;
-          if (fieldNumber === 5) result.sequence   = v.value;
-          if (fieldNumber === 6) result.utime      = v.value;
-        } else if (wireType === 2) {
-          const lenInfo = decodeVarint(buf, pos); pos = lenInfo.pos;
-          const len = Number(lenInfo.value);
-          const slice = buf.slice(pos, pos + len); pos += len;
-          if (fieldNumber === 1) result.data = slice;
-        } else { break; }
-      }
-      return result;
+      const f = parseProto(bytes);
+      return {
+        data:      f[1] ?? null,
+        encoding:  f[2] != null ? Number(f[2]) : 0,
+        frameType: f[3] != null ? Number(f[3]) : 0,
+        timestamp: f[4] ?? 0n,
+        sequence:  f[5] ?? 0n,
+        utime:     f[6] ?? 0n,
+      };
     }
 
     class CameraSlot {
@@ -392,6 +400,7 @@
         this.frameCount  = 0;
         this.lastFpsTime = performance.now();
         this.fps = 0;
+        this._decoderError = false;
 
         this.slot   = document.createElement("div");
         this.slot.className = "video-slot";
@@ -403,15 +412,23 @@
         this.label.textContent = topic;
         this.stats  = document.createElement("div");
         this.stats.className = "cam-stats";
-        this.stats.textContent = "0 fps";
+        this.stats.textContent = "待機中";
         this.slot.append(this.canvas, this.label, this.stats);
         document.getElementById("videoGrid").appendChild(this.slot);
 
-        this._initDecoder();
+        if (!("VideoDecoder" in window)) {
+          videoLog("[error] このブラウザは WebCodecs に未対応です。Chrome 94+ が必要です。");
+        } else {
+          this._initDecoder();
+        }
       }
 
       _initDecoder() {
-        if (!("VideoDecoder" in window)) return;
+        if (this.decoder && this.decoder.state !== "closed") {
+          try { this.decoder.close(); } catch (_) {}
+        }
+        this._decoderError = false;
+        this.sequence = undefined;
         this.decoder = new VideoDecoder({
           output: (frame) => {
             this.canvas.width  = frame.displayWidth;
@@ -427,9 +444,13 @@
               this.stats.textContent = `${this.fps} fps`;
             }
           },
-          error: (e) => videoLog(`[${this.topic}] decoder error: ${e.message}`),
+          error: (e) => {
+            this._decoderError = true;
+            videoLog(`[${this.topic}] VideoDecoder error: ${e.message} → 次のキーフレームで再初期化`);
+          },
         });
         this.decoder.configure({ codec: "vp09.00.10.08", optimizeForLatency: true });
+        videoLog(`[${this.topic}] VideoDecoder 初期化完了`);
       }
 
       _drawJpeg(data) {
@@ -446,18 +467,30 @@
         img.src = url;
       }
 
-      _decode(image) {
+      // ドキュメント通り timestamp には image.utime を使用する
+      _decode(image, frameType) {
         if (image.encoding === 1) { this._drawJpeg(image.data); return; }
+        if (image.encoding === 0) { return; } // UNKNOWN スキップ
+
+        if (this._decoderError) {
+          if (frameType !== "key") return;
+          this._initDecoder();
+        }
         if (!this.decoder || this.decoder.state === "closed") this._initDecoder();
-        const frameType = image.frameType === 1 ? "key" : "delta";
+        if (this.decoder.state !== "configured") return;
+
         try {
           this.decoder.decode(new EncodedVideoChunk({
-            type: frameType,
-            timestamp: Number(image.timestamp),
-            data: image.data,
+            type:      frameType,
+            timestamp: Number(image.utime),  // ドキュメント: _decode(image, frameType, Number(image.utime), sequence)
+            data:      image.data,
           }));
         } catch (e) {
-          videoLog(`[${this.topic}] decode error: ${e.message}`);
+          videoLog(`[${this.topic}] EncodedVideoChunk error: ${e.name}: ${e.message}`);
+          if (e instanceof TypeError) {
+            videoLog(`  data.length=${image.data?.length}, frameType=${frameType}, utime=${image.utime}`);
+            this._decoderError = true;
+          }
         }
       }
 
@@ -465,6 +498,7 @@
         const newSeq   = Number(image.sequence);
         const newFrame = Number(image.timestamp);
         if (newFrame === 0 && newSeq === 0) return;
+        if (image.frameType === 0) return; // TYPE_UNKNOWN スキップ
         this._decodingWithFrameSequencing(image, newSeq);
       }
 
@@ -472,13 +506,13 @@
         const frameType = image.frameType === 1 ? "key" : "delta";
         const cacheSize = Object.keys(this.cache).length;
         if (this.sequence === undefined && frameType === "key") {
-          this._decodeAndSet(image);
+          this._decodeAndSet(image, frameType);
         } else if (this.sequence !== undefined) {
           const isFuture    = newSeq > this.sequence;
           const isFutureKey = isFuture && frameType === "key";
           const isNext      = newSeq === this.sequence + 1;
           if (isFutureKey || isNext) {
-            this._decodeAndSet(image);
+            this._decodeAndSet(image, frameType);
             this._playQueued();
             this._pruneOlder(this.sequence);
           } else {
@@ -494,8 +528,8 @@
         }
       }
 
-      _decodeAndSet(image) {
-        this._decode(image);
+      _decodeAndSet(image, frameType) {
+        this._decode(image, frameType);
         const seq = Number(image.sequence);
         this.sequence    = seq > 0 ? seq : undefined;
         this.frameNumber = Number(image.timestamp);
@@ -508,7 +542,7 @@
           if (seq < this.sequence + 1) continue;
           if (seq === this.sequence + 1) {
             const f = this.cache[seq];
-            if (f) this._decodeAndSet(f);
+            if (f) this._decodeAndSet(f, f.frameType === 1 ? "key" : "delta");
           } else break;
         }
       }
@@ -523,7 +557,8 @@
           else if (this.sequence && seq > this.sequence && img?.frameType === 1) next = seq;
           else { skip = true; next = undefined; }
           if (next !== undefined && !skip) {
-            this._decodeAndSet(this.cache[next]);
+            const f = this.cache[next];
+            this._decodeAndSet(f, f.frameType === 1 ? "key" : "delta");
             delete this.cache[next];
           } else if (this.sequence && seq < this.sequence) {
             delete this.cache[seq];
@@ -538,7 +573,9 @@
       }
 
       destroy() {
-        if (this.decoder && this.decoder.state !== "closed") this.decoder.close();
+        if (this.decoder && this.decoder.state !== "closed") {
+          try { this.decoder.close(); } catch (_) {}
+        }
         this.slot.remove();
       }
     }
@@ -566,7 +603,7 @@
 
     function maybeDecompress(data, compression) {
       if (compression === 0) return data;
-      videoLog("[warn] ZSTD 圧縮データを受信しましたが、ブラウザは ZSTD に未対応です。");
+      videoLog("[warn] ZSTD 圧縮データを受信。ブラウザは ZSTD 非対応のためスキップします。");
       return null;
     }
 
@@ -576,6 +613,7 @@
       const urlDisplay  = document.getElementById("videoUrlDisplay");
 
       if (!baseUrl) { videoLog("[error] Video Stream URL は必須です。"); return; }
+      if (!accessToken) { videoLog("[error] 先にトークンを取得してください。"); return; }
 
       const params = new URLSearchParams({ token: accessToken });
       if (extraParams) {
@@ -591,9 +629,11 @@
       cameraSlots.forEach(slot => slot.destroy());
       cameraSlots.clear();
       document.getElementById("videoGrid").innerHTML = "";
-      document.getElementById("videoLog").textContent = "接続中...\n";
+      document.getElementById("videoLog").textContent = "";
+      videoLog(`[info] 接続先: ${fullUrl}`);
+      videoLog(`[info] token 先頭20文字: ${accessToken.substring(0, 20)}...`);
 
-      if (videoWs) videoWs.close();
+      if (videoWs) { try { videoWs.close(); } catch(_) {} }
       videoWs = new WebSocket(fullUrl);
       videoWs.binaryType = "arraybuffer";
 
@@ -604,35 +644,45 @@
       };
       videoWs.onmessage = (event) => {
         try {
+          if (!(event.data instanceof ArrayBuffer)) {
+            videoLog(`[warn] テキストメッセージ受信: ${String(event.data).substring(0, 100)}`);
+            return;
+          }
           const wrapper = parseQuicWrapper(event.data);
-          if (!wrapper.data) return;
+          videoLog(`[recv] topic="${wrapper.mqtt_topic}" compression=${wrapper.compression} data=${wrapper.data?.length ?? 0}B`);
+          if (!wrapper.data || wrapper.data.length === 0) { videoLog("[warn] quic_wrapper.data が空"); return; }
           const imageData = maybeDecompress(wrapper.data, wrapper.compression);
           if (!imageData) return;
           const image = parseImageT(imageData);
-          if (!image.data) return;
+          videoLog(`[image_t] enc=${image.encoding} type=${image.frameType} seq=${image.sequence} utime=${image.utime} data=${image.data?.length ?? 0}B`);
+          if (!image.data || image.data.length === 0) { videoLog("[warn] image_t.data が空"); return; }
           const slot = getOrCreateSlot(wrapper.mqtt_topic || "unknown");
           if (slot) slot.feed(image);
         } catch (e) {
-          videoLog(`[error] メッセージ処理エラー: ${e.message}`);
+          videoLog(`[error] メッセージ処理エラー: ${e.name}: ${e.message}`);
         }
       };
       videoWs.onerror = (event) => {
-        const detail = [
-          `type: ${event.type}`,
-          event.message ? `message: ${event.message}` : null,
-        ].filter(Boolean).join(", ");
-        videoLog(`[ERROR] ${detail || "詳細情報なし (ブラウザのセキュリティポリシーにより制限)"}`);
+        const detail = event.message ? `message: ${event.message}` : "詳細情報なし (ブラウザのセキュリティポリシーにより制限)";
+        videoLog(`[ERROR] ${detail}`);
       };
       videoWs.onclose = (event) => {
         const status = event.wasClean ? "[CLOSED]" : "[CLOSED unexpectedly]";
         videoLog(`${status} code: ${event.code}, reason: ${event.reason || "なし"}`);
+        if (event.code === 1006) {
+          videoLog("[hint] code 1006 の原因として考えられること:");
+          videoLog("  ① トークンが無効または期限切れ → トークンを再取得してください");
+          videoLog("  ② URL が誤っている (wss:// で始まっているか確認)");
+          videoLog("  ③ 必須クエリパラメータ (vehicle_id 等) が不足している");
+          videoLog("  ④ 車両数が最大4台の制限を超えている");
+        }
         document.getElementById("videoDisconnectBtn").disabled = true;
         document.getElementById("videoConnectBtn").disabled = false;
       };
     });
 
     document.getElementById("videoDisconnectBtn").addEventListener("click", () => {
-      if (videoWs) { videoWs.close(); videoWs = null; }
+      if (videoWs) { try { videoWs.close(); } catch(_) {} videoWs = null; }
       cameraSlots.forEach(slot => slot.destroy());
       cameraSlots.clear();
       document.getElementById("videoGrid").innerHTML = "";
