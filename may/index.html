@@ -423,12 +423,14 @@
         }
       }
 
-      _initDecoder() {
+      _initDecoder(codec) {
         if (this.decoder && this.decoder.state !== "closed") {
           try { this.decoder.close(); } catch (_) {}
         }
         this._decoderError = false;
         this.sequence = undefined;
+        this._tsBase = null; // タイムスタンプベース
+        this._tsCounter = 0;
         this.decoder = new VideoDecoder({
           output: (frame) => {
             this.canvas.width  = frame.displayWidth;
@@ -449,8 +451,10 @@
             videoLog(`[${this.topic}] VideoDecoder error: ${e.message} → 次のキーフレームで再初期化`);
           },
         });
-        this.decoder.configure({ codec: "vp09.00.10.08", optimizeForLatency: true });
-        videoLog(`[${this.topic}] VideoDecoder 初期化完了`);
+        // encoding=2:VP8 → vp8, encoding=3:VP9 → vp09.00.10.08
+        const codecStr = codec === "vp8" ? "vp8" : "vp09.00.10.08";
+        this.decoder.configure({ codec: codecStr, optimizeForLatency: true });
+        videoLog(`[${this.topic}] VideoDecoder 初期化 codec=${codecStr}`);
       }
 
       _drawJpeg(data) {
@@ -467,39 +471,62 @@
         img.src = url;
       }
 
-      // ドキュメント通り timestamp には image.utime を使用する
       _decode(image, frameType) {
+        // encoding: 1=JPEG, 2=VP8, 3=VP9, 0=UNKNOWN
         if (image.encoding === 1) { this._drawJpeg(image.data); return; }
-        if (image.encoding === 0) { return; } // UNKNOWN スキップ
 
+        // デコーダーエラー後はキーフレームで再初期化
         if (this._decoderError) {
           if (frameType !== "key") return;
-          this._initDecoder();
+          const codec = image.encoding === 2 ? "vp8" : "vp9";
+          this._initDecoder(codec);
         }
-        if (!this.decoder || this.decoder.state === "closed") this._initDecoder();
-        if (this.decoder.state !== "configured") return;
+        if (!this.decoder || this.decoder.state === "closed") {
+          const codec = image.encoding === 2 ? "vp8" : "vp9";
+          this._initDecoder(codec);
+        }
+        if (this.decoder.state !== "configured") {
+          videoLog(`[${this.topic}] decoder state=${this.decoder.state}`);
+          return;
+        }
+
+        // タイムスタンプ: utime が 0 の場合は連番で代替
+        let ts = Number(image.utime);
+        if (ts === 0) {
+          if (this._tsBase === null) this._tsBase = 0;
+          ts = this._tsCounter * 33333; // ~30fps 相当
+        }
+        this._tsCounter++;
 
         try {
           this.decoder.decode(new EncodedVideoChunk({
             type:      frameType,
-            timestamp: Number(image.utime),  // ドキュメント: _decode(image, frameType, Number(image.utime), sequence)
+            timestamp: ts,
             data:      image.data,
           }));
         } catch (e) {
           videoLog(`[${this.topic}] EncodedVideoChunk error: ${e.name}: ${e.message}`);
-          if (e instanceof TypeError) {
-            videoLog(`  data.length=${image.data?.length}, frameType=${frameType}, utime=${image.utime}`);
-            this._decoderError = true;
-          }
+          videoLog(`  enc=${image.encoding} frameType=${frameType} utime=${image.utime} dataLen=${image.data?.length}`);
+          this._decoderError = true;
         }
       }
 
       feed(image) {
         const newSeq   = Number(image.sequence);
         const newFrame = Number(image.timestamp);
-        if (newFrame === 0 && newSeq === 0) return;
-        if (image.frameType === 0) return; // TYPE_UNKNOWN スキップ
-        this._decodingWithFrameSequencing(image, newSeq);
+
+        // frameType=UNKNOWN(0) はキーフレームとして扱い試みる（サーバー実装によっては0が来る場合がある）
+        const effectiveFrameType = image.frameType === 0 ? 1 : image.frameType;
+        const adjustedImage = effectiveFrameType !== image.frameType
+          ? { ...image, frameType: effectiveFrameType }
+          : image;
+
+        // sequence/timestamp が両方0のフレームのみスキップ（片方0はOK）
+        if (newFrame === 0 && newSeq === 0) {
+          videoLog(`[${this.topic}] seq=0 ts=0 フレームスキップ`);
+          return;
+        }
+        this._decodingWithFrameSequencing(adjustedImage, newSeq);
       }
 
       _decodingWithFrameSequencing(image, newSeq) {
@@ -531,7 +558,8 @@
       _decodeAndSet(image, frameType) {
         this._decode(image, frameType);
         const seq = Number(image.sequence);
-        this.sequence    = seq > 0 ? seq : undefined;
+        // seq=0 は -1 として記録することでデルタフレームの isNext 判定を機能させる
+        this.sequence    = seq > 0 ? seq : -1;
         this.frameNumber = Number(image.timestamp);
       }
 
@@ -582,6 +610,7 @@
 
     const cameraSlots = new Map();
     let videoWs = null;
+    let _msgCount = 0; // 詳細ログの間引き用
 
     function videoLog(msg) {
       const el = document.getElementById("videoLog");
@@ -642,19 +671,31 @@
         document.getElementById("videoDisconnectBtn").disabled = false;
         document.getElementById("videoConnectBtn").disabled = true;
       };
+      _msgCount = 0;
       videoWs.onmessage = (event) => {
         try {
           if (!(event.data instanceof ArrayBuffer)) {
-            videoLog(`[warn] テキストメッセージ受信: ${String(event.data).substring(0, 100)}`);
+            videoLog(`[warn] テキストメッセージ受信: ${String(event.data).substring(0, 200)}`);
             return;
           }
+          _msgCount++;
           const wrapper = parseQuicWrapper(event.data);
-          videoLog(`[recv] topic="${wrapper.mqtt_topic}" compression=${wrapper.compression} data=${wrapper.data?.length ?? 0}B`);
+
+          // 最初の10フレームと100フレームごとに詳細ログ
+          const verbose = _msgCount <= 10 || _msgCount % 100 === 0;
+          if (verbose) {
+            videoLog(`[recv #${_msgCount}] topic="${wrapper.mqtt_topic}" compression=${wrapper.compression} data=${wrapper.data?.length ?? 0}B`);
+          }
+
           if (!wrapper.data || wrapper.data.length === 0) { videoLog("[warn] quic_wrapper.data が空"); return; }
           const imageData = maybeDecompress(wrapper.data, wrapper.compression);
           if (!imageData) return;
           const image = parseImageT(imageData);
-          videoLog(`[image_t] enc=${image.encoding} type=${image.frameType} seq=${image.sequence} utime=${image.utime} data=${image.data?.length ?? 0}B`);
+
+          if (verbose) {
+            videoLog(`[image_t #${_msgCount}] enc=${image.encoding} type=${image.frameType} seq=${image.sequence} utime=${image.utime} data=${image.data?.length ?? 0}B`);
+          }
+
           if (!image.data || image.data.length === 0) { videoLog("[warn] image_t.data が空"); return; }
           const slot = getOrCreateSlot(wrapper.mqtt_topic || "unknown");
           if (slot) slot.feed(image);
