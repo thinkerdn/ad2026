@@ -148,8 +148,8 @@
       <pre id="videoUrlDisplay">-</pre>
       <label style="margin-top:12px;">受信フレーム表示</label>
       <div class="video-grid" id="videoGrid"></div>
-      <label style="margin-top:12px;">ログ</label>
-      <pre id="videoLog" style="max-height:180px;overflow-y:auto;">-</pre>
+      <label style="margin-top:12px;">ログ <span class="hint">（パイプライン全ステージの診断情報）</span></label>
+      <pre id="videoLog" style="max-height:320px;overflow-y:auto;font-size:0.78em;">-</pre>
     </div>
   </div>
 
@@ -673,34 +673,59 @@
       };
       _msgCount = 0;
       videoWs.onmessage = (event) => {
+        _msgCount++;
+        const n = _msgCount;
+
+        // ステップ①: メッセージ受信確認
+        if (n <= 5 || n % 50 === 0) {
+          const type = event.data instanceof ArrayBuffer ? `ArrayBuffer(${event.data.byteLength}B)`
+                     : event.data instanceof Blob        ? `Blob(${event.data.size}B)`
+                     : `text:"${String(event.data).substring(0,60)}"`;
+          videoLog(`[#${n}] recv: ${type}`);
+        }
+
         try {
+          // テキストメッセージ（JSON等）はそのまま表示して終了
           if (!(event.data instanceof ArrayBuffer)) {
-            videoLog(`[warn] テキストメッセージ受信: ${String(event.data).substring(0, 200)}`);
+            if (n <= 5) videoLog(`[#${n}] text msg: ${String(event.data).substring(0, 200)}`);
             return;
           }
-          _msgCount++;
-          const wrapper = parseQuicWrapper(event.data);
 
-          // 最初の10フレームと100フレームごとに詳細ログ
-          const verbose = _msgCount <= 10 || _msgCount % 100 === 0;
-          if (verbose) {
-            videoLog(`[recv #${_msgCount}] topic="${wrapper.mqtt_topic}" compression=${wrapper.compression} data=${wrapper.data?.length ?? 0}B`);
+          // ステップ②: quic_wrapper パース
+          const raw = new Uint8Array(event.data);
+          if (n <= 5) videoLog(`[#${n}] raw bytes[0..7]: ${Array.from(raw.slice(0,8)).map(b=>b.toString(16).padStart(2,'0')).join(' ')}`);
+
+          const wrapper = parseQuicWrapper(event.data);
+          if (n <= 5) videoLog(`[#${n}] quic_wrapper: topic="${wrapper.mqtt_topic}" comp=${wrapper.compression} data=${wrapper.data?.length ?? 'null'}B`);
+
+          if (!wrapper.data || wrapper.data.length === 0) {
+            videoLog(`[#${n}] ✗ quic_wrapper.data が空 → パース失敗の可能性。raw先頭: ${Array.from(raw.slice(0,16)).map(b=>b.toString(16).padStart(2,'0')).join(' ')}`);
+            return;
           }
 
-          if (!wrapper.data || wrapper.data.length === 0) { videoLog("[warn] quic_wrapper.data が空"); return; }
+          // ステップ③: 圧縮解除
           const imageData = maybeDecompress(wrapper.data, wrapper.compression);
           if (!imageData) return;
-          const image = parseImageT(imageData);
 
-          if (verbose) {
-            videoLog(`[image_t #${_msgCount}] enc=${image.encoding} type=${image.frameType} seq=${image.sequence} utime=${image.utime} data=${image.data?.length ?? 0}B`);
+          // ステップ④: image_t パース
+          const image = parseImageT(imageData);
+          if (n <= 5) videoLog(`[#${n}] image_t: enc=${image.encoding} frameType=${image.frameType} seq=${image.sequence} utime=${image.utime} data=${image.data?.length ?? 'null'}B`);
+
+          if (!image.data || image.data.length === 0) {
+            videoLog(`[#${n}] ✗ image_t.data が空 → image_t パース失敗`);
+            return;
           }
 
-          if (!image.data || image.data.length === 0) { videoLog("[warn] image_t.data が空"); return; }
-          const slot = getOrCreateSlot(wrapper.mqtt_topic || "unknown");
-          if (slot) slot.feed(image);
+          // ステップ⑤: スロット取得 & feed
+          const topicKey = wrapper.mqtt_topic || "unknown";
+          const slot = getOrCreateSlot(topicKey);
+          if (!slot) return;
+
+          if (n <= 5) videoLog(`[#${n}] → slot.feed(enc=${image.encoding}, frameType=${image.frameType}, seq=${image.sequence})`);
+          slot.feed(image);
+
         } catch (e) {
-          videoLog(`[error] メッセージ処理エラー: ${e.name}: ${e.message}`);
+          videoLog(`[#${n}] ✗ 例外: ${e.name}: ${e.message}\n  ${e.stack?.split('\n')[1] ?? ''}`);
         }
       };
       videoWs.onerror = (event) => {
