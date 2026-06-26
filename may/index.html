@@ -142,6 +142,9 @@
       <label>追加パラメータ <span class="hint">(key=value 形式、1行1パラメータ)</span>
         <textarea id="videoParams" placeholder="vehicle_id=xxx&#10;camera=fc"></textarea>
       </label>
+      <label>接続後に送信するメッセージ <span class="hint">(JSON — サーバーが要求する場合のみ。Fleet API チームに確認してください)</span>
+        <textarea id="videoSubscribeMsg" placeholder='{"action": "subscribe", "topic": "/.vehicle.VEHICLENAME.video"}'></textarea>
+      </label>
       <button id="videoConnectBtn" disabled>Video 接続</button>
       <button id="videoDisconnectBtn" disabled>切断</button>
       <label style="margin-top:12px;">接続 URL</label>
@@ -235,6 +238,18 @@
       resultEl.className = "";
       resultEl.textContent = "リクエスト中...";
 
+      // curl コマンド生成（CORS ブロック時の代替手段として常に表示）
+      const curlLines = [
+        `curl -X ${method} \\`,
+        `  -H "Authorization: Bearer ${accessToken}" \\`,
+        `  -H "Content-Type: application/json" \\`,
+      ];
+      if (bodyText && (method === "POST" || method === "PUT")) {
+        curlLines.push(`  -d '${bodyText.replace(/'/g, "'\\''")}' \\`);
+      }
+      curlLines.push(`  "${url}"`);
+      const curlCmd = curlLines.join("\n");
+
       try {
         const headers = {
           "Content-Type": "application/json",
@@ -253,7 +268,16 @@
         resultEl.textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
       } catch (err) {
         resultEl.className = "error";
-        resultEl.textContent = String(err);
+        const isCors = err instanceof TypeError && /fetch|Failed|CORS/i.test(err.message);
+        if (isCors) {
+          resultEl.textContent =
+            `[CORS エラー] ブラウザから直接このAPIを呼び出すことはできません。\n` +
+            `May Mobility API サーバーが CORS ヘッダーを返していないため、ブラウザがリクエストをブロックします。\n\n` +
+            `【代替手段】以下の curl コマンドをターミナルで実行してください:\n\n` +
+            curlCmd;
+        } else {
+          resultEl.textContent = `${String(err)}\n\n【curl コマンド (参考)】\n${curlCmd}`;
+        }
       }
     });
 
@@ -670,6 +694,20 @@
         videoLog("✓ Video WebSocket 接続しました");
         document.getElementById("videoDisconnectBtn").disabled = false;
         document.getElementById("videoConnectBtn").disabled = true;
+
+        // 接続後サブスクライブメッセージを送信（入力がある場合のみ）
+        const subMsg = document.getElementById("videoSubscribeMsg").value.trim();
+        if (subMsg) {
+          try {
+            JSON.parse(subMsg); // 構文チェック
+            videoWs.send(subMsg);
+            videoLog(`[info] subscribe メッセージ送信: ${subMsg.substring(0, 100)}`);
+          } catch (e) {
+            videoLog(`[warn] subscribe メッセージが不正な JSON です: ${e.message}`);
+          }
+        } else {
+          videoLog("[info] subscribe メッセージなし（フィールドが空）。サーバーが要求する場合は入力してください。");
+        }
       };
       _msgCount = 0;
       videoWs.onmessage = (event) => {
