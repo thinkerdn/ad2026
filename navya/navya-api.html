@@ -195,7 +195,7 @@
     <div class="card-header">
       <span class="step">1</span>
       Token 取得
-      <span class="info-chip">POST http://login.stg.navya.cloud/auth/token</span>
+      <span class="info-chip">POST http://lapin.stg.navya.cloud/auth/token</span>
     </div>
     <div class="card-body">
       <div class="form-row">
@@ -308,6 +308,128 @@
 <script>
   let currentToken = null;
 
+  // ---- Protobuf wire-format decoder (schema-less) ----
+  // Decodes raw Protobuf binary into a plain JS object.
+  // Field names are numeric (field_1, field_2, ...) because no .proto schema is available.
+  function decodeProtoRaw(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const result = {};
+    let pos = 0;
+
+    function readVarint() {
+      let val = 0, shift = 0, b;
+      do {
+        if (pos >= bytes.length) throw new Error('Unexpected EOF in varint');
+        b = bytes[pos++];
+        val |= (b & 0x7F) << shift;
+        shift += 7;
+      } while (b & 0x80);
+      return val;
+    }
+
+    function readFixed32() {
+      if (pos + 4 > bytes.length) throw new Error('Unexpected EOF in fixed32');
+      const v = bytes[pos] | (bytes[pos+1]<<8) | (bytes[pos+2]<<16) | (bytes[pos+3]<<24);
+      pos += 4;
+      return v >>> 0;
+    }
+
+    function readFixed64() {
+      const lo = readFixed32(), hi = readFixed32();
+      return '0x' + hi.toString(16).padStart(8,'0') + lo.toString(16).padStart(8,'0');
+    }
+
+    function readBytes(len) {
+      const slice = bytes.slice(pos, pos + len);
+      pos += len;
+      return slice;
+    }
+
+    function tryUtf8(arr) {
+      try { return new TextDecoder('utf-8', { fatal: true }).decode(arr); }
+      catch { return null; }
+    }
+
+    function appendField(key, val) {
+      if (key in result) {
+        if (!Array.isArray(result[key])) result[key] = [result[key]];
+        result[key].push(val);
+      } else {
+        result[key] = val;
+      }
+    }
+
+    while (pos < bytes.length) {
+      const tag      = readVarint();
+      const fieldNum = tag >>> 3;
+      const wireType = tag & 0x07;
+      const key      = 'field_' + fieldNum;
+
+      switch (wireType) {
+        case 0: { appendField(key, readVarint()); break; }
+        case 1: { appendField(key, readFixed64()); break; }
+        case 2: {
+          const len = readVarint();
+          const raw = readBytes(len);
+          const str = tryUtf8(raw);
+          if (str !== null) {
+            appendField(key, str);
+          } else {
+            try {
+              const nested = decodeProtoRaw(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
+              appendField(key, Object.keys(nested).length ? nested : bytesToHex(raw));
+            } catch {
+              appendField(key, bytesToHex(raw));
+            }
+          }
+          break;
+        }
+        case 5: { appendField(key, readFixed32()); break; }
+        default: pos = bytes.length; // unknown wire type — stop
+      }
+    }
+    return result;
+  }
+
+  function bytesToHex(arr) {
+    return Array.from(arr).map(function(b) { return b.toString(16).padStart(2,'0'); }).join('');
+  }
+
+  function looksLikeJson(buffer) {
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < Math.min(bytes.length, 16); i++) {
+      const c = bytes[i];
+      if (c === 0x20 || c === 0x09 || c === 0x0A || c === 0x0D) continue;
+      return c === 0x7B || c === 0x5B; // '{' or '['
+    }
+    return false;
+  }
+
+  // Parse response: JSON → native parse; binary → Protobuf decode
+  async function parseResponseBuffer(res) {
+    const buf         = await res.arrayBuffer();
+    const contentType = res.headers.get('content-type') || '';
+
+    if (contentType.includes('application/json') || looksLikeJson(buf)) {
+      const text = new TextDecoder().decode(buf);
+      try { return { data: JSON.parse(text), encoding: 'json' }; }
+      catch { return { data: text, encoding: 'text' }; }
+    }
+
+    if (contentType.includes('text/')) {
+      const text = new TextDecoder().decode(buf);
+      return { data: text, encoding: 'text' };
+    }
+
+    try {
+      const decoded = decodeProtoRaw(buf);
+      return { data: decoded, encoding: 'protobuf' };
+    } catch (e) {
+      const text = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+      return { data: text, encoding: 'binary' };
+    }
+  }
+
   // ---- Step 1: Token取得 ----
   async function getToken() {
     const username = document.getElementById('username').value.trim();
@@ -318,30 +440,46 @@
     document.getElementById('loginBtn').disabled = true;
 
     try {
-      const res = await fetch('http://login.stg.navya.cloud/auth/token', {
+      const res = await fetch('http://lapin.stg.navya.cloud/auth/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ username, password }).toString()
       });
 
-      const data = await res.json();
+      const parsed = await parseResponseBuffer(res);
+      const data   = parsed.data;
 
       if (!res.ok) {
-        const msg = data.detail || data.message || JSON.stringify(data);
+        const msg = (typeof data === 'object' && data)
+          ? (data.detail || data.message || data.field_1 || JSON.stringify(data))
+          : String(data);
         setLoginStatus('err', 'HTTP ' + res.status + ': ' + msg);
-        showTokenDisplay('エラー: ' + msg, false);
+        showTokenDisplay('エラー: ' + msg + '\n\n' + JSON.stringify(data, null, 2), false);
         return;
       }
 
-      const token = data.token || data.access_token || null;
+      // Extract token string: check known field names first, then any long string field
+      let token = null;
+      if (typeof data === 'object' && data) {
+        token = data.token || data.access_token || data.jwt || null;
+        if (!token) {
+          var vals = Object.values(data);
+          for (var i = 0; i < vals.length; i++) {
+            if (typeof vals[i] === 'string' && vals[i].length > 20) { token = vals[i]; break; }
+          }
+        }
+      } else if (typeof data === 'string' && data.length > 20) {
+        token = data;
+      }
+
       if (!token) {
-        setLoginStatus('err', 'token フィールドが見つかりません');
-        showTokenDisplay('レスポンス: ' + JSON.stringify(data, null, 2), false);
+        setLoginStatus('err', 'token フィールドが見つかりません (' + parsed.encoding + ')');
+        showTokenDisplay('デコード結果 (' + parsed.encoding + '):\n' + JSON.stringify(data, null, 2), false);
         return;
       }
 
       currentToken = token;
-      setLoginStatus('ok', '取得成功 (HTTP ' + res.status + ')');
+      setLoginStatus('ok', '取得成功 (HTTP ' + res.status + ', ' + parsed.encoding + ')');
       showTokenDisplay(token, true);
       document.getElementById('sendBtn').disabled = false;
 
@@ -361,7 +499,7 @@
   }
 
   function showTokenDisplay(text, success) {
-    const area = document.getElementById('tokenArea');
+    const area    = document.getElementById('tokenArea');
     const display = document.getElementById('tokenDisplay');
     area.style.display = 'block';
     display.textContent = text;
@@ -371,7 +509,7 @@
   function copyToken() {
     if (!currentToken) return;
     navigator.clipboard.writeText(currentToken)
-      .then(() => alert('Token をクリップボードにコピーしました。'));
+      .then(function() { alert('Token をクリップボードにコピーしました。'); });
   }
 
   // ---- Step 2: API リクエスト ----
@@ -389,7 +527,7 @@
 
     const customHeaders = collectPairs('headersList');
     const headers = { 'Authorization': 'Bearer ' + currentToken };
-    customHeaders.forEach(([k, v]) => { headers[k] = v; });
+    customHeaders.forEach(function(pair) { headers[pair[0]] = pair[1]; });
 
     let bodyData = undefined;
     const contentType = document.getElementById('contentType').value;
@@ -408,17 +546,14 @@
     const t0 = Date.now();
 
     try {
-      const res = await fetch(url, { method, headers, body: bodyData });
+      const res     = await fetch(url, { method, headers, body: bodyData });
       const elapsed = Date.now() - t0;
-      const resText = await res.text();
+      const parsed  = await parseResponseBuffer(res);
 
-      let pretty;
-      try { pretty = JSON.stringify(JSON.parse(resText), null, 2); }
-      catch { pretty = resText; }
-
-      document.getElementById('responseBox').textContent = pretty;
+      document.getElementById('responseBox').textContent = JSON.stringify(parsed.data, null, 2);
       document.getElementById('respMeta').textContent =
-        'HTTP ' + res.status + ' ' + res.statusText + ' | ' + elapsed + 'ms | ' + resText.length + ' bytes';
+        'HTTP ' + res.status + ' ' + res.statusText +
+        ' | ' + elapsed + 'ms | ' + parsed.encoding.toUpperCase();
     } catch (e) {
       document.getElementById('responseBox').textContent = 'エラー: ' + e.message;
     } finally {
@@ -436,7 +571,7 @@
   function addHeader(key, val) {
     key = key || ''; val = val || '';
     const list = document.getElementById('headersList');
-    const row = document.createElement('div');
+    const row  = document.createElement('div');
     row.className = 'header-row';
     row.innerHTML =
       '<input type="text" placeholder="Header 名 (例: Accept)" class="hk" value="' + esc(key) + '">' +
@@ -448,7 +583,7 @@
   function addParam(key, val) {
     key = key || ''; val = val || '';
     const list = document.getElementById('paramsList');
-    const row = document.createElement('div');
+    const row  = document.createElement('div');
     row.className = 'header-row';
     row.innerHTML =
       '<input type="text" placeholder="パラメータ名" class="hk" value="' + esc(key) + '">' +
@@ -458,7 +593,7 @@
   }
 
   function collectPairs(listId) {
-    const rows = document.querySelectorAll('#' + listId + ' .header-row');
+    const rows   = document.querySelectorAll('#' + listId + ' .header-row');
     const result = [];
     rows.forEach(function(row) {
       const k = row.querySelector('.hk').value.trim();
@@ -469,7 +604,7 @@
   }
 
   function esc(s) {
-    return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
   }
 
   // ---- Tabs ----
