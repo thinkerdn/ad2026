@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Navya API Client</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; color: #333; }
+
+    header {
+      background: #1a1a2e;
+      color: #fff;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    header h1 { font-size: 1.2rem; font-weight: 600; }
+    header .badge {
+      background: #e94560;
+      color: #fff;
+      font-size: 0.7rem;
+      padding: 2px 8px;
+      border-radius: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .container { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+
+    .card {
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      margin-bottom: 20px;
+      overflow: hidden;
+    }
+    .card-header {
+      background: #16213e;
+      color: #fff;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+    .card-header .step {
+      background: #e94560;
+      color: #fff;
+      width: 24px; height: 24px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.8rem; font-weight: 700; flex-shrink: 0;
+    }
+    .card-body { padding: 20px; }
+
+    .form-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+    .form-group { flex: 1; min-width: 200px; }
+    .form-group label { display: block; font-size: 0.8rem; color: #666; margin-bottom: 4px; }
+    .form-group input, .form-group select, .form-group textarea {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      transition: border-color 0.2s;
+    }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+      outline: none;
+      border-color: #e94560;
+    }
+    .form-group textarea { min-height: 80px; resize: vertical; font-family: monospace; }
+
+    .btn {
+      padding: 10px 22px;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.1s;
+    }
+    .btn:hover { opacity: 0.88; }
+    .btn:active { transform: scale(0.98); }
+    .btn-primary { background: #e94560; color: #fff; }
+    .btn-secondary { background: #16213e; color: #fff; }
+    .btn-sm { padding: 6px 14px; font-size: 0.8rem; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .token-display {
+      background: #f8f9fa;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 0.8rem;
+      word-break: break-all;
+      min-height: 48px;
+      color: #333;
+      position: relative;
+    }
+    .token-display.success { border-color: #4caf50; background: #f1f8e9; }
+    .token-display.error   { border-color: #f44336; background: #ffeaea; color: #c62828; }
+
+    .copy-btn {
+      position: absolute;
+      top: 8px; right: 8px;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.85rem;
+      margin-top: 10px;
+    }
+    .status-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #ccc;
+      flex-shrink: 0;
+    }
+    .status-dot.ok      { background: #4caf50; }
+    .status-dot.err     { background: #f44336; }
+    .status-dot.loading { background: #ff9800; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+    .tabs { display: flex; gap: 0; border-bottom: 2px solid #eee; margin-bottom: 16px; }
+    .tab {
+      padding: 8px 16px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      color: #666;
+    }
+    .tab.active { color: #e94560; border-bottom-color: #e94560; font-weight: 600; }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    .response-box {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      border-radius: 6px;
+      padding: 16px;
+      font-family: monospace;
+      font-size: 0.82rem;
+      max-height: 400px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .header-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .header-row input { flex: 1; }
+    .remove-btn {
+      background: none;
+      border: none;
+      color: #f44336;
+      font-size: 1.1rem;
+      cursor: pointer;
+      padding: 0 4px;
+      line-height: 1;
+    }
+
+    .info-chip {
+      display: inline-block;
+      background: rgba(255,255,255,0.12);
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 0.75rem;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Navya API Client</h1>
+  <span class="badge">Staging</span>
+</header>
+
+<div class="container">
+
+  <!-- STEP 1: Token取得 -->
+  <div class="card">
+    <div class="card-header">
+      <span class="step">1</span>
+      Token 取得
+      <span class="info-chip">POST http://login.stg.navya.cloud/auth/token</span>
+    </div>
+    <div class="card-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Username</label>
+          <input type="text" id="username" placeholder="user@example.com" autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="password" placeholder="••••••••" autocomplete="current-password">
+        </div>
+      </div>
+
+      <button class="btn btn-primary" id="loginBtn" onclick="getToken()">Token を取得</button>
+
+      <div class="status-row" id="loginStatus" style="display:none">
+        <span class="status-dot" id="loginDot"></span>
+        <span id="loginMsg"></span>
+      </div>
+
+      <div style="margin-top:14px; position:relative; display:none" id="tokenArea">
+        <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px">取得した Token</label>
+        <div class="token-display" id="tokenDisplay"></div>
+        <button class="btn btn-sm btn-secondary copy-btn" onclick="copyToken()">コピー</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 2: API呼び出し -->
+  <div class="card">
+    <div class="card-header">
+      <span class="step">2</span>
+      API リクエスト
+    </div>
+    <div class="card-body">
+
+      <div class="form-row">
+        <div class="form-group" style="flex:0 0 120px">
+          <label>Method</label>
+          <select id="method">
+            <option>GET</option>
+            <option>POST</option>
+            <option>PUT</option>
+            <option>PATCH</option>
+            <option>DELETE</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Base URL</label>
+          <input type="text" id="baseUrl" placeholder="https://api.stg.navya.cloud">
+        </div>
+        <div class="form-group">
+          <label>Endpoint</label>
+          <input type="text" id="endpoint" placeholder="/v1/vehicles">
+        </div>
+      </div>
+
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab('headers')">Headers</div>
+        <div class="tab"        onclick="switchTab('body')">Body</div>
+        <div class="tab"        onclick="switchTab('params')">Query Params</div>
+      </div>
+
+      <!-- Headers -->
+      <div class="tab-content active" id="tab-headers">
+        <div id="headersList"></div>
+        <button class="btn btn-sm btn-secondary" onclick="addHeader()" style="margin-top:6px">+ Header 追加</button>
+      </div>
+
+      <!-- Body -->
+      <div class="tab-content" id="tab-body">
+        <div class="form-group">
+          <label>Content-Type</label>
+          <select id="contentType" onchange="onContentTypeChange()">
+            <option value="application/json">application/json</option>
+            <option value="application/x-www-form-urlencoded">application/x-www-form-urlencoded</option>
+            <option value="none">なし (Body なし)</option>
+          </select>
+        </div>
+        <div class="form-group" id="bodyGroup" style="margin-top:10px">
+          <label>Request Body</label>
+          <textarea id="requestBody" placeholder='{"key": "value"}'></textarea>
+        </div>
+      </div>
+
+      <!-- Query Params -->
+      <div class="tab-content" id="tab-params">
+        <div id="paramsList"></div>
+        <button class="btn btn-sm btn-secondary" onclick="addParam()" style="margin-top:6px">+ Param 追加</button>
+      </div>
+
+      <div style="margin-top:16px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+        <button class="btn btn-primary" id="sendBtn" onclick="sendRequest()" disabled>リクエスト送信</button>
+        <button class="btn btn-secondary btn-sm" onclick="clearResponse()">クリア</button>
+        <span id="sendStatus" style="font-size:0.82rem;color:#666"></span>
+      </div>
+
+      <div style="margin-top:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:0.85rem;font-weight:600;color:#333">Response</span>
+          <span id="respMeta" style="font-size:0.78rem;color:#666"></span>
+        </div>
+        <div class="response-box" id="responseBox">— レスポンスがここに表示されます —</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  let currentToken = null;
+
+  // ---- Step 1: Token取得 ----
+  async function getToken() {
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value;
+    if (!username || !password) { alert('Username と Password を入力してください。'); return; }
+
+    setLoginStatus('loading', 'Token を取得中...');
+    document.getElementById('loginBtn').disabled = true;
+
+    try {
+      const res = await fetch('http://login.stg.navya.cloud/auth/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ username, password }).toString()
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        const msg = data.detail || data.message || JSON.stringify(data);
+        setLoginStatus('err', 'HTTP ' + res.status + ': ' + msg);
+        showTokenDisplay('エラー: ' + msg, false);
+        return;
+      }
+
+      const token = data.token || data.access_token || null;
+      if (!token) {
+        setLoginStatus('err', 'token フィールドが見つかりません');
+        showTokenDisplay('レスポンス: ' + JSON.stringify(data, null, 2), false);
+        return;
+      }
+
+      currentToken = token;
+      setLoginStatus('ok', '取得成功 (HTTP ' + res.status + ')');
+      showTokenDisplay(token, true);
+      document.getElementById('sendBtn').disabled = false;
+
+    } catch (e) {
+      setLoginStatus('err', e.message);
+      showTokenDisplay('エラー: ' + e.message, false);
+    } finally {
+      document.getElementById('loginBtn').disabled = false;
+    }
+  }
+
+  function setLoginStatus(state, msg) {
+    const row = document.getElementById('loginStatus');
+    row.style.display = 'flex';
+    document.getElementById('loginDot').className = 'status-dot ' + state;
+    document.getElementById('loginMsg').textContent = msg;
+  }
+
+  function showTokenDisplay(text, success) {
+    const area = document.getElementById('tokenArea');
+    const display = document.getElementById('tokenDisplay');
+    area.style.display = 'block';
+    display.textContent = text;
+    display.className = 'token-display ' + (success ? 'success' : 'error');
+  }
+
+  function copyToken() {
+    if (!currentToken) return;
+    navigator.clipboard.writeText(currentToken)
+      .then(() => alert('Token をクリップボードにコピーしました。'));
+  }
+
+  // ---- Step 2: API リクエスト ----
+  async function sendRequest() {
+    if (!currentToken) { alert('先に Token を取得してください。'); return; }
+
+    const method   = document.getElementById('method').value;
+    const baseUrl  = document.getElementById('baseUrl').value.trim().replace(/\/$/, '');
+    const endpoint = document.getElementById('endpoint').value.trim();
+    if (!baseUrl) { alert('Base URL を入力してください。'); return; }
+
+    const params = collectPairs('paramsList');
+    const qs = params.length ? '?' + new URLSearchParams(Object.fromEntries(params)).toString() : '';
+    const url = baseUrl + endpoint + qs;
+
+    const customHeaders = collectPairs('headersList');
+    const headers = { 'Authorization': 'Bearer ' + currentToken };
+    customHeaders.forEach(([k, v]) => { headers[k] = v; });
+
+    let bodyData = undefined;
+    const contentType = document.getElementById('contentType').value;
+    if (contentType !== 'none' && ['POST', 'PUT', 'PATCH'].includes(method)) {
+      headers['Content-Type'] = contentType;
+      const raw = document.getElementById('requestBody').value.trim();
+      if (raw) {
+        bodyData = contentType === 'application/json'
+          ? raw
+          : new URLSearchParams(JSON.parse(raw)).toString();
+      }
+    }
+
+    document.getElementById('sendBtn').disabled = true;
+    document.getElementById('sendStatus').textContent = '送信中...';
+    const t0 = Date.now();
+
+    try {
+      const res = await fetch(url, { method, headers, body: bodyData });
+      const elapsed = Date.now() - t0;
+      const resText = await res.text();
+
+      let pretty;
+      try { pretty = JSON.stringify(JSON.parse(resText), null, 2); }
+      catch { pretty = resText; }
+
+      document.getElementById('responseBox').textContent = pretty;
+      document.getElementById('respMeta').textContent =
+        'HTTP ' + res.status + ' ' + res.statusText + ' | ' + elapsed + 'ms | ' + resText.length + ' bytes';
+    } catch (e) {
+      document.getElementById('responseBox').textContent = 'エラー: ' + e.message;
+    } finally {
+      document.getElementById('sendBtn').disabled = false;
+      document.getElementById('sendStatus').textContent = '';
+    }
+  }
+
+  function clearResponse() {
+    document.getElementById('responseBox').textContent = '— レスポンスがここに表示されます —';
+    document.getElementById('respMeta').textContent = '';
+  }
+
+  // ---- Headers / Params 動的行 ----
+  function addHeader(key, val) {
+    key = key || ''; val = val || '';
+    const list = document.getElementById('headersList');
+    const row = document.createElement('div');
+    row.className = 'header-row';
+    row.innerHTML =
+      '<input type="text" placeholder="Header 名 (例: Accept)" class="hk" value="' + esc(key) + '">' +
+      '<input type="text" placeholder="値" class="hv" value="' + esc(val) + '">' +
+      '<button class="remove-btn" onclick="this.parentElement.remove()">×</button>';
+    list.appendChild(row);
+  }
+
+  function addParam(key, val) {
+    key = key || ''; val = val || '';
+    const list = document.getElementById('paramsList');
+    const row = document.createElement('div');
+    row.className = 'header-row';
+    row.innerHTML =
+      '<input type="text" placeholder="パラメータ名" class="hk" value="' + esc(key) + '">' +
+      '<input type="text" placeholder="値" class="hv" value="' + esc(val) + '">' +
+      '<button class="remove-btn" onclick="this.parentElement.remove()">×</button>';
+    list.appendChild(row);
+  }
+
+  function collectPairs(listId) {
+    const rows = document.querySelectorAll('#' + listId + ' .header-row');
+    const result = [];
+    rows.forEach(function(row) {
+      const k = row.querySelector('.hk').value.trim();
+      const v = row.querySelector('.hv').value.trim();
+      if (k) result.push([k, v]);
+    });
+    return result;
+  }
+
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+  }
+
+  // ---- Tabs ----
+  function switchTab(name) {
+    var tabNames = ['headers', 'body', 'params'];
+    document.querySelectorAll('.tab').forEach(function(t, i) {
+      t.classList.toggle('active', tabNames[i] === name);
+    });
+    document.querySelectorAll('.tab-content').forEach(function(c) {
+      c.classList.toggle('active', c.id === 'tab-' + name);
+    });
+  }
+
+  function onContentTypeChange() {
+    var ct = document.getElementById('contentType').value;
+    document.getElementById('bodyGroup').style.display = ct === 'none' ? 'none' : 'block';
+  }
+
+  // 初期Header行
+  addHeader('Accept', 'application/json');
+</script>
+</body>
+</html>
