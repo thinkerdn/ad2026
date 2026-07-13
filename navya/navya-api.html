@@ -395,42 +395,7 @@
     return Array.from(arr).map(function(b) { return b.toString(16).padStart(2,'0'); }).join('');
   }
 
-  function looksLikeJson(buffer) {
-    const bytes = new Uint8Array(buffer);
-    for (let i = 0; i < Math.min(bytes.length, 16); i++) {
-      const c = bytes[i];
-      if (c === 0x20 || c === 0x09 || c === 0x0A || c === 0x0D) continue;
-      return c === 0x7B || c === 0x5B; // '{' or '['
-    }
-    return false;
-  }
-
-  // Parse response: JSON → native parse; binary → Protobuf decode
-  async function parseResponseBuffer(res) {
-    const buf         = await res.arrayBuffer();
-    const contentType = res.headers.get('content-type') || '';
-
-    if (contentType.includes('application/json') || looksLikeJson(buf)) {
-      const text = new TextDecoder().decode(buf);
-      try { return { data: JSON.parse(text), encoding: 'json' }; }
-      catch { return { data: text, encoding: 'text' }; }
-    }
-
-    if (contentType.includes('text/')) {
-      const text = new TextDecoder().decode(buf);
-      return { data: text, encoding: 'text' };
-    }
-
-    try {
-      const decoded = decodeProtoRaw(buf);
-      return { data: decoded, encoding: 'protobuf' };
-    } catch (e) {
-      const text = new TextDecoder('utf-8', { fatal: false }).decode(buf);
-      return { data: text, encoding: 'binary' };
-    }
-  }
-
-  // ---- Step 1: Token取得 ----
+  // ---- Step 1: Token取得 (REST API / JSON) ----
   async function getToken() {
     const username = document.getElementById('username').value.trim();
     const password = document.getElementById('password').value;
@@ -446,40 +411,24 @@
         body: new URLSearchParams({ username, password }).toString()
       });
 
-      const parsed = await parseResponseBuffer(res);
-      const data   = parsed.data;
+      const data = await res.json();
 
       if (!res.ok) {
-        const msg = (typeof data === 'object' && data)
-          ? (data.detail || data.message || data.field_1 || JSON.stringify(data))
-          : String(data);
+        const msg = data.detail || data.message || JSON.stringify(data);
         setLoginStatus('err', 'HTTP ' + res.status + ': ' + msg);
         showTokenDisplay('エラー: ' + msg + '\n\n' + JSON.stringify(data, null, 2), false);
         return;
       }
 
-      // Extract token string: check known field names first, then any long string field
-      let token = null;
-      if (typeof data === 'object' && data) {
-        token = data.token || data.access_token || data.jwt || null;
-        if (!token) {
-          var vals = Object.values(data);
-          for (var i = 0; i < vals.length; i++) {
-            if (typeof vals[i] === 'string' && vals[i].length > 20) { token = vals[i]; break; }
-          }
-        }
-      } else if (typeof data === 'string' && data.length > 20) {
-        token = data;
-      }
-
+      const token = data.token || data.access_token || data.jwt || null;
       if (!token) {
-        setLoginStatus('err', 'token フィールドが見つかりません (' + parsed.encoding + ')');
-        showTokenDisplay('デコード結果 (' + parsed.encoding + '):\n' + JSON.stringify(data, null, 2), false);
+        setLoginStatus('err', 'token フィールドが見つかりません');
+        showTokenDisplay('レスポンス:\n' + JSON.stringify(data, null, 2), false);
         return;
       }
 
       currentToken = token;
-      setLoginStatus('ok', '取得成功 (HTTP ' + res.status + ', ' + parsed.encoding + ')');
+      setLoginStatus('ok', '取得成功 (HTTP ' + res.status + ')');
       showTokenDisplay(token, true);
       document.getElementById('sendBtn').disabled = false;
 
@@ -548,12 +497,20 @@
     try {
       const res     = await fetch(url, { method, headers, body: bodyData });
       const elapsed = Date.now() - t0;
-      const parsed  = await parseResponseBuffer(res);
+      const buf     = await res.arrayBuffer();
 
-      document.getElementById('responseBox').textContent = JSON.stringify(parsed.data, null, 2);
+      let decoded;
+      try {
+        decoded = decodeProtoRaw(buf);
+      } catch (e) {
+        decoded = { _error: 'Protobuf decode failed: ' + e.message,
+                    _raw: bytesToHex(new Uint8Array(buf)) };
+      }
+
+      document.getElementById('responseBox').textContent = JSON.stringify(decoded, null, 2);
       document.getElementById('respMeta').textContent =
         'HTTP ' + res.status + ' ' + res.statusText +
-        ' | ' + elapsed + 'ms | ' + parsed.encoding.toUpperCase();
+        ' | ' + elapsed + 'ms | PROTOBUF (' + buf.byteLength + ' bytes)';
     } catch (e) {
       document.getElementById('responseBox').textContent = 'エラー: ' + e.message;
     } finally {
