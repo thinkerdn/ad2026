@@ -254,6 +254,13 @@
           <label>Endpoint</label>
           <input type="text" id="endpoint" placeholder="/v1/vehicles" value="/fleet/vehicle/all">
         </div>
+        <div class="form-group" style="flex:0 0 180px">
+          <label>Proto Schema</label>
+          <select id="protoSchema">
+            <option value="">なし（field_N のまま）</option>
+            <option value="VehicleList" selected>VehicleList</option>
+          </select>
+        </div>
       </div>
 
       <div class="tabs">
@@ -419,6 +426,48 @@
     return Array.from(arr).map(function(b) { return b.toString(16).padStart(2,'0'); }).join('');
   }
 
+  // ---- Proto schema definitions (mirrors api.proto) ----
+  // Each schema maps field_N keys to { name, repeated, message }
+  var SCHEMAS = {
+    Vehicle: {
+      field_1:  { name: 'id' },
+      field_2:  { name: 'name' },
+      field_3:  { name: 'display_name' },
+      field_6:  { name: 'firmware_version' },
+      field_8:  { name: 'status' },
+      field_9:  { name: 'api_version' },
+      field_11: { name: 'mode' },
+      field_12: { name: 'capacity' }
+    },
+    VehicleList: {
+      field_1: { name: 'vehicles', repeated: true, message: 'Vehicle' }
+    }
+  };
+
+  // Recursively rename field_N keys using the schema
+  function applySchema(obj, schemaName) {
+    var schema = SCHEMAS[schemaName];
+    if (!schema || typeof obj !== 'object' || obj === null) return obj;
+    if (Array.isArray(obj)) {
+      return obj.map(function(item) { return applySchema(item, schemaName); });
+    }
+    var out = {};
+    Object.keys(obj).forEach(function(key) {
+      var def = schema[key];
+      var outKey = def ? def.name : key;
+      var val    = obj[key];
+      if (def && def.message) {
+        if (def.repeated && Array.isArray(val)) {
+          val = val.map(function(item) { return applySchema(item, def.message); });
+        } else {
+          val = applySchema(val, def.message);
+        }
+      }
+      out[outKey] = val;
+    });
+    return out;
+  }
+
   // Base64文字列かどうか判定（改行・スペース除去後に Base64 文字のみで構成されているか）
   function isBase64(str) {
     const s = str.replace(/[\r\n\s]/g, '');
@@ -572,12 +621,15 @@
       const elapsed = Date.now() - t0;
       const buf     = await res.arrayBuffer();
 
-      const decoded = safeDecodeProto(buf);
+      var decoded    = safeDecodeProto(buf);
+      var schemaName = document.getElementById('protoSchema').value;
+      if (schemaName) decoded = applySchema(decoded, schemaName);
 
       document.getElementById('responseBox').textContent = JSON.stringify(decoded, null, 2);
+      var schemaLabel = schemaName ? ' | schema:' + schemaName : '';
       document.getElementById('respMeta').textContent =
         'HTTP ' + res.status + ' ' + res.statusText +
-        ' | ' + elapsed + 'ms | PROTOBUF (' + buf.byteLength + ' bytes)';
+        ' | ' + elapsed + 'ms | PROTOBUF (' + buf.byteLength + ' bytes)' + schemaLabel;
     } catch (e) {
       document.getElementById('responseBox').textContent = 'エラー: ' + e.message;
     } finally {

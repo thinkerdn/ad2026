@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package navya;
+
+// ----- Vehicle -----
+message Vehicle {
+  string id               = 1;   // field_1
+  string name             = 2;   // field_2
+  string display_name     = 3;   // field_3
+  string firmware_version = 6;   // field_6
+  int32  status           = 8;   // field_8
+  string api_version      = 9;   // field_9
+  int32  mode             = 11;  // field_11
+  int32  capacity         = 12;  // field_12
+}
+
+// ----- VehicleList (top-level response for /fleet/vehicle/all) -----
+message VehicleList {
+  repeated Vehicle vehicles = 1;  // field_1
+}
