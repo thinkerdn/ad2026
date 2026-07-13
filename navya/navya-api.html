@@ -406,19 +406,22 @@
   // Attempt to decode buffer as protobuf; on failure return hex dump with error
   function safeDecodeProto(buf) {
     const bytes = new Uint8Array(buf);
+    // まずJSONとして試みる（サーバーがエラーをJSONで返す場合）
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+    const trimmed = text.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try { return JSON.parse(trimmed); } catch { /* fall through to protobuf */ }
+    }
+
+    // Protobufとしてデコード
     try {
       const decoded = decodeProtoRaw(buf);
       if (Object.keys(decoded).length === 0 && bytes.length > 0) {
-        // Decoded to empty — likely not protobuf; show raw text
-        const text = new TextDecoder('utf-8', { fatal: false }).decode(buf);
-        return { _raw_text: text, _hex: bytesToHex(bytes), _note: 'Could not decode as protobuf' };
+        return { _raw_text: text };
       }
       return decoded;
     } catch (e) {
-      return {
-        _error: 'Protobuf decode failed: ' + e.message,
-        _hex:   bytesToHex(bytes)
-      };
+      return { _error: 'Protobuf decode failed: ' + e.message, _raw: text };
     }
   }
 
@@ -613,7 +616,7 @@
   });
 
   // 初期Header行
-  addHeader('Accept', 'application/json');
+  addHeader('Accept', 'application/x-protobuf');
 </script>
 </body>
 </html>
