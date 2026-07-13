@@ -248,11 +248,11 @@
         </div>
         <div class="form-group">
           <label>Base URL</label>
-          <input type="text" id="baseUrl" placeholder="https://api.stg.navya.cloud">
+          <input type="text" id="baseUrl" placeholder="https://api.stg.navya.cloud" value="https://lapin.stg.navya.cloud">
         </div>
         <div class="form-group">
           <label>Endpoint</label>
-          <input type="text" id="endpoint" placeholder="/v1/vehicles">
+          <input type="text" id="endpoint" placeholder="/v1/vehicles" value="/fleet/vehicle/all">
         </div>
       </div>
 
@@ -403,26 +403,47 @@
     return Array.from(arr).map(function(b) { return b.toString(16).padStart(2,'0'); }).join('');
   }
 
-  // Attempt to decode buffer as protobuf; on failure return hex dump with error
+  // Base64文字列かどうか判定（改行・スペース除去後に Base64 文字のみで構成されているか）
+  function isBase64(str) {
+    const s = str.replace(/[\r\n\s]/g, '');
+    return s.length > 0 && s.length % 4 === 0 && /^[A-Za-z0-9+/]+=*$/.test(s);
+  }
+
+  // Base64文字列 → Uint8Array
+  function base64ToBytes(str) {
+    const bin = atob(str.replace(/[\r\n\s]/g, ''));
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return arr;
+  }
+
+  // レスポンスバッファをデコードして JS オブジェクトに変換
   function safeDecodeProto(buf) {
     const bytes = new Uint8Array(buf);
-    // まずJSONとして試みる（サーバーがエラーをJSONで返す場合）
-    const text = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+    const text  = new TextDecoder('utf-8', { fatal: false }).decode(buf);
     const trimmed = text.trim();
+
+    // 1) JSON エラーレスポンス（サーバーが JSON でエラーを返す場合）
     if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-      try { return JSON.parse(trimmed); } catch { /* fall through to protobuf */ }
+      try { return JSON.parse(trimmed); } catch { /* fall through */ }
     }
 
-    // Protobufとしてデコード
+    // 2) Base64 エンコード済みの Protobuf バイナリ
+    if (isBase64(trimmed)) {
+      try {
+        const decoded = decodeProtoRaw(base64ToBytes(trimmed).buffer);
+        if (Object.keys(decoded).length > 0) return decoded;
+      } catch { /* fall through */ }
+    }
+
+    // 3) 生 Protobuf バイナリ
     try {
       const decoded = decodeProtoRaw(buf);
-      if (Object.keys(decoded).length === 0 && bytes.length > 0) {
-        return { _raw_text: text };
-      }
-      return decoded;
-    } catch (e) {
-      return { _error: 'Protobuf decode failed: ' + e.message, _raw: text };
-    }
+      if (Object.keys(decoded).length > 0) return decoded;
+    } catch { /* fall through */ }
+
+    // 4) デコード不能 — テキストをそのまま返す
+    return { _raw_text: trimmed };
   }
 
   // ---- Step 1: Token取得 (REST API / JSON) ----
