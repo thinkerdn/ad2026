@@ -90,17 +90,20 @@
     .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
     .token-display {
+      width: 100%;
       background: #f8f9fa;
       border: 1px solid #e0e0e0;
       border-radius: 6px;
-      padding: 12px;
+      padding: 10px 12px;
       font-family: monospace;
       font-size: 0.8rem;
       word-break: break-all;
-      min-height: 48px;
+      min-height: 60px;
       color: #333;
-      position: relative;
+      resize: vertical;
+      transition: border-color 0.2s;
     }
+    .token-display:focus { outline: none; border-color: #e94560; }
     .token-display.success { border-color: #4caf50; background: #f1f8e9; }
     .token-display.error   { border-color: #f44336; background: #ffeaea; color: #c62828; }
 
@@ -195,7 +198,7 @@
     <div class="card-header">
       <span class="step">1</span>
       Token 取得
-      <span class="info-chip">POST http://lapin.stg.navya.cloud/auth/token</span>
+      <span class="info-chip">POST https://lapin.stg.navya.cloud/auth/token</span>
     </div>
     <div class="card-body">
       <div class="form-row">
@@ -216,10 +219,13 @@
         <span id="loginMsg"></span>
       </div>
 
-      <div style="margin-top:14px; position:relative; display:none" id="tokenArea">
-        <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px">取得した Token</label>
-        <div class="token-display" id="tokenDisplay"></div>
-        <button class="btn btn-sm btn-secondary copy-btn" onclick="copyToken()">コピー</button>
+      <div style="margin-top:14px; display:none" id="tokenArea">
+        <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px">取得した Token（直接編集可能）</label>
+        <textarea class="token-display" id="tokenDisplay" rows="3" spellcheck="false"></textarea>
+        <div style="margin-top:6px; display:flex; gap:8px; align-items:center">
+          <button class="btn btn-sm btn-secondary" onclick="copyToken()">コピー</button>
+          <span style="font-size:0.75rem;color:#999">編集した内容がリクエストの Authorization ヘッダーに使われます</span>
+        </div>
       </div>
     </div>
   </div>
@@ -405,7 +411,7 @@
     document.getElementById('loginBtn').disabled = true;
 
     try {
-      const res = await fetch('http://lapin.stg.navya.cloud/auth/token', {
+      const res = await fetch('https://lapin.stg.navya.cloud/auth/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ username, password }).toString()
@@ -451,19 +457,25 @@
     const area    = document.getElementById('tokenArea');
     const display = document.getElementById('tokenDisplay');
     area.style.display = 'block';
-    display.textContent = text;
+    display.value     = text;
     display.className = 'token-display ' + (success ? 'success' : 'error');
   }
 
+  function getEffectiveToken() {
+    const val = document.getElementById('tokenDisplay').value.trim();
+    return val || currentToken;
+  }
+
   function copyToken() {
-    if (!currentToken) return;
-    navigator.clipboard.writeText(currentToken)
+    const val = document.getElementById('tokenDisplay').value.trim();
+    if (!val) return;
+    navigator.clipboard.writeText(val)
       .then(function() { alert('Token をクリップボードにコピーしました。'); });
   }
 
   // ---- Step 2: API リクエスト ----
   async function sendRequest() {
-    if (!currentToken) { alert('先に Token を取得してください。'); return; }
+    if (!getEffectiveToken()) { alert('先に Token を取得するか、Token を直接入力してください。'); return; }
 
     const method   = document.getElementById('method').value;
     const baseUrl  = document.getElementById('baseUrl').value.trim().replace(/\/$/, '');
@@ -475,7 +487,7 @@
     const url = baseUrl + endpoint + qs;
 
     const customHeaders = collectPairs('headersList');
-    const headers = { 'Authorization': 'Bearer ' + currentToken };
+    const headers = { 'Authorization': 'Bearer ' + getEffectiveToken() };
     customHeaders.forEach(function(pair) { headers[pair[0]] = pair[1]; });
 
     let bodyData = undefined;
