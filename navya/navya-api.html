@@ -607,6 +607,11 @@
     document.getElementById('bodyGroup').style.display = ct === 'none' ? 'none' : 'block';
   }
 
+  // tokenテキストボックスの入力に応じてリクエスト送信ボタンの活性を制御
+  document.getElementById('tokenDisplay').addEventListener('input', function() {
+    document.getElementById('sendBtn').disabled = this.value.trim() === '';
+  });
+
   // 初期Header行
   addHeader('Accept', 'application/json');
 </script>
