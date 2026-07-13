@@ -374,15 +374,31 @@
         case 2: {
           const len = readVarint();
           const raw = readBytes(len);
+
+          // 制御文字（0x01-0x1F、0x7F）を含む場合はネストProtobufとして優先デコード
+          function hasControlChars(arr) {
+            for (var i = 0; i < arr.length; i++) {
+              var c = arr[i];
+              if ((c > 0 && c < 0x20 && c !== 0x09 && c !== 0x0A && c !== 0x0D) || c === 0x7F) return true;
+            }
+            return false;
+          }
+
+          if (hasControlChars(raw)) {
+            // ネストProtobufとして試みる
+            try {
+              const sub = decodeProtoRaw(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
+              if (Object.keys(sub).length > 0) { appendField(key, sub); break; }
+            } catch { /* fall through to string */ }
+          }
+
           const str = tryUtf8(raw);
           if (str !== null) {
-            // UTF-8 string: also try to parse as JSON object
             if (str.startsWith('{') || str.startsWith('[')) {
               try { appendField(key, JSON.parse(str)); break; } catch { /* fall through */ }
             }
             appendField(key, str);
           } else {
-            // Binary: try nested protobuf, fall back to hex
             try {
               const sub = decodeProtoRaw(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
               appendField(key, Object.keys(sub).length ? sub : bytesToHex(raw));
