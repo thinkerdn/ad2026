@@ -216,7 +216,7 @@
         <span id="loginMsg"></span>
       </div>
 
-      <div style="margin-top:14px; display:none" id="tokenArea">
+      <div style="margin-top:14px;" id="tokenArea">
         <label style="font-size:0.8rem;color:#666;display:block;margin-bottom:4px">取得した Token（直接編集可能）</label>
         <input type="text" class="token-display" id="tokenDisplay" spellcheck="false" autocomplete="off">
         <div style="margin-top:6px; display:flex; gap:8px; align-items:center">
@@ -414,20 +414,22 @@
         body: new URLSearchParams({ username, password }).toString()
       });
 
-      const data = await res.json();
+      const text = await res.text();
 
       if (!res.ok) {
-        const msg = data.detail || data.message || JSON.stringify(data);
-        setLoginStatus('err', 'HTTP ' + res.status + ': ' + msg);
-        showTokenDisplay('エラー: ' + msg + '\n\n' + JSON.stringify(data, null, 2), false);
+        setLoginStatus('err', 'HTTP ' + res.status + ': ' + text);
+        showTokenDisplay(text, false);
         return;
       }
 
-      const token = data.token || data.access_token || data.jwt || null;
-      if (!token) {
-        setLoginStatus('err', 'token フィールドが見つかりません');
-        showTokenDisplay('レスポンス:\n' + JSON.stringify(data, null, 2), false);
-        return;
+      // レスポンスはプレーンテキストのトークン文字列
+      // JSONの場合は token / access_token フィールドを取り出す
+      let token = text.trim();
+      if (token.startsWith('{')) {
+        try {
+          const obj = JSON.parse(token);
+          token = obj.token || obj.access_token || obj.jwt || token;
+        } catch (e) { /* そのまま使用 */ }
       }
 
       currentToken = token;
@@ -451,9 +453,7 @@
   }
 
   function showTokenDisplay(text, success) {
-    const area    = document.getElementById('tokenArea');
     const display = document.getElementById('tokenDisplay');
-    area.style.display = 'block';
     display.value     = text;
     display.className = 'token-display ' + (success ? 'success' : 'error');
   }
