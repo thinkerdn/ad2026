@@ -312,20 +312,20 @@
   let currentToken = null;
 
   // ---- Protobuf wire-format decoder (schema-less) ----
-  // Decodes raw Protobuf binary into a plain JS object.
-  // Field names are numeric (field_1, field_2, ...) because no .proto schema is available.
+  // Field names: field_<N> (no .proto schema available).
+  // Uses multiplication instead of bit-shifting to avoid JS 32-bit integer overflow.
   function decodeProtoRaw(buffer) {
     const bytes = new Uint8Array(buffer);
     const result = {};
     let pos = 0;
 
     function readVarint() {
-      let val = 0, shift = 0, b;
+      let val = 0, mul = 1, b;
       do {
         if (pos >= bytes.length) throw new Error('Unexpected EOF in varint');
         b = bytes[pos++];
-        val |= (b & 0x7F) << shift;
-        shift += 7;
+        val += (b & 0x7F) * mul;
+        mul *= 128;
       } while (b & 0x80);
       return val;
     }
@@ -376,11 +376,16 @@
           const raw = readBytes(len);
           const str = tryUtf8(raw);
           if (str !== null) {
+            // UTF-8 string: also try to parse as JSON object
+            if (str.startsWith('{') || str.startsWith('[')) {
+              try { appendField(key, JSON.parse(str)); break; } catch { /* fall through */ }
+            }
             appendField(key, str);
           } else {
+            // Binary: try nested protobuf, fall back to hex
             try {
-              const nested = decodeProtoRaw(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
-              appendField(key, Object.keys(nested).length ? nested : bytesToHex(raw));
+              const sub = decodeProtoRaw(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
+              appendField(key, Object.keys(sub).length ? sub : bytesToHex(raw));
             } catch {
               appendField(key, bytesToHex(raw));
             }
@@ -396,6 +401,25 @@
 
   function bytesToHex(arr) {
     return Array.from(arr).map(function(b) { return b.toString(16).padStart(2,'0'); }).join('');
+  }
+
+  // Attempt to decode buffer as protobuf; on failure return hex dump with error
+  function safeDecodeProto(buf) {
+    const bytes = new Uint8Array(buf);
+    try {
+      const decoded = decodeProtoRaw(buf);
+      if (Object.keys(decoded).length === 0 && bytes.length > 0) {
+        // Decoded to empty — likely not protobuf; show raw text
+        const text = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+        return { _raw_text: text, _hex: bytesToHex(bytes), _note: 'Could not decode as protobuf' };
+      }
+      return decoded;
+    } catch (e) {
+      return {
+        _error: 'Protobuf decode failed: ' + e.message,
+        _hex:   bytesToHex(bytes)
+      };
+    }
   }
 
   // ---- Step 1: Token取得 (REST API / JSON) ----
@@ -508,13 +532,7 @@
       const elapsed = Date.now() - t0;
       const buf     = await res.arrayBuffer();
 
-      let decoded;
-      try {
-        decoded = decodeProtoRaw(buf);
-      } catch (e) {
-        decoded = { _error: 'Protobuf decode failed: ' + e.message,
-                    _raw: bytesToHex(new Uint8Array(buf)) };
-      }
+      const decoded = safeDecodeProto(buf);
 
       document.getElementById('responseBox').textContent = JSON.stringify(decoded, null, 2);
       document.getElementById('respMeta').textContent =
